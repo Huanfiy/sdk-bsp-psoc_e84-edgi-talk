@@ -1,51 +1,33 @@
-/*
- * Copyright (c) 2006-2023, RT-Thread Development Team
+/******************************************************************************
+ * Copyright 2020-2026 RT-Thread Development Team. All Rights Reserved.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Change Logs:
- * Date           Author       Notes
- * 2022-07-18     Rbb666       first version
- */
-
-#ifndef __DRV_SPI__
-#define __DRV_SPI__
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *****************************************************************************/
+#ifndef DRV_SPI_H__
+#define DRV_SPI_H__
 
 #include <rtthread.h>
 #include <drivers/spi.h>
-#include "drv_gpio.h"
+#include "board.h"
 
-#define INT_PRIORITY        7u
-
-struct ifx_spi_handle
-{
-    const char *bus_name;
-    mtb_hal_spi_t *spi_obj;
-
-    uint16_t sck_pin;
-    uint16_t miso_pin;
-    uint16_t mosi_pin;
-    uint32_t freq;
-
-    CySCB_Type *base;
-    cy_stc_scb_spi_config_t *cy_stc_scb_spi_config;
-    mtb_hal_spi_configurator_t *mtb_hal_spi_configurator;
-    cy_stc_scb_spi_context_t   *context;
-    cy_stc_sysint_t intr_cfg;
-};
-
-/* ifx spi dirver class */
-struct ifx_spi
-{
-    rt_uint32_t cs_pin;
-
-    struct ifx_spi_handle       *spi_handle_t;
-    struct rt_spi_configuration *rt_spi_cfg_t;
-    struct rt_spi_bus spi_bus;
-
-    struct rt_completion cpt;
-};
-
-rt_err_t rt_hw_spi_device_attach(const char *bus_name, const char *device_name, rt_base_t cs_pin);
-
+#ifdef __cplusplus
+extern "C" {
 #endif
+
+rt_err_t drv_spi_init(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DRV_SPI_H__ */

@@ -33,6 +33,9 @@ $ sdk-bsp-psoc_e84-edgi-talk
 │   │   ├── Edgi_Talk_M33_USB_H
 │   │   ├── Edgi_Talk_M55_USB_D
 │   │   └── Edgi_Talk_M55_USB_H
+│   ├── Edgi_Talk_IPC
+│   │   ├── Edgi_Talk_M33_IPC
+│   │   └── Edgi_Talk_M55_IPC
 │   ├── Edgi-Talk_CoreMark
 │   ├── Edgi-Talk_CDC_Echo
 │   ├── Edgi-Talk_HyperRam

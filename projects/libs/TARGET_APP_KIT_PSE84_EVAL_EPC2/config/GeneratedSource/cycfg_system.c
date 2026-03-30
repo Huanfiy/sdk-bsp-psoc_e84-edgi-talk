@@ -4,9 +4,9 @@
  * Description:
  * System configuration
  * This file was automatically generated and should not be modified.
- * Configurator Backend 3.60.0
- * device-db 4.34.0.9502
- * mtb-dsl-pse8xxgp 1.1.1.824
+ * Configurator Backend 3.70.0
+ * device-db 4.35.0.9884
+ * mtb-dsl-pse8xxgp 1.4.0.994
  *
  *******************************************************************************
  * Copyright 2026 Cypress Semiconductor Corporation (an Infineon company) or
@@ -1261,11 +1261,13 @@ cy_rslt_t cycfg_ppc_init_unsecure(PPC_Type* base, const cy_en_prot_region_t regi
 }
 cy_rslt_t init_cycfg_ppc0(void)
 {
-    return cycfg_ppc_init_unsecure(PPC0, cycfg_unused_ppc_0_regions, cycfg_unused_ppc_0_regions_count);
+    cy_rslt_t ret = cycfg_ppc_init_unsecure(PPC0, cycfg_unused_ppc_0_regions, cycfg_unused_ppc_0_regions_count);
+    return ret;
 }
 cy_rslt_t init_cycfg_ppc1(void)
 {
-    return cycfg_ppc_init_unsecure(PPC1, cycfg_unused_ppc_1_regions, cycfg_unused_ppc_1_regions_count);
+    cy_rslt_t ret = cycfg_ppc_init_unsecure(PPC1, cycfg_unused_ppc_1_regions, cycfg_unused_ppc_1_regions_count);
+    return ret;
 }
 void init_cycfg_system(void)
 {

@@ -5,8 +5,6 @@ cycfg_clocks.c
 cycfg_clocks.h
 cycfg_connectivity_bt.h
 cycfg_connectivity_wifi.h
-cycfg_dmas.c
-cycfg_dmas.h
 cycfg_memory.h
 cycfg_notices.h
 cycfg_peripheral_clocks.c
@@ -39,4 +37,5 @@ cymem_ilinkarm_regions_CM33_0_S.icf
 cymem_ilinkarm_regions_CM55_0.icf
 cymem_memory_locations.h
 cymem_memory_types.h
+device_mem.json
 edgeproctectsymbols.json

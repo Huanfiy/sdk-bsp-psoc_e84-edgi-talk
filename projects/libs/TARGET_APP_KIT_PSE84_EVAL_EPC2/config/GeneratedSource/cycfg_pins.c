@@ -4,9 +4,9 @@
  * Description:
  * Pin configuration
  * This file was automatically generated and should not be modified.
- * Configurator Backend 3.60.0
- * device-db 4.34.0.9502
- * mtb-dsl-pse8xxgp 1.1.1.824
+ * Configurator Backend 3.70.0
+ * device-db 4.35.0.9884
+ * mtb-dsl-pse8xxgp 1.4.0.994
  *
  *******************************************************************************
  * Copyright 2026 Cypress Semiconductor Corporation (an Infineon company) or
@@ -771,8 +771,8 @@ const cy_stc_gpio_pin_config_t CYBSP_WIFI_HOST_WAKE_config =
     .outVal = 1,
     .driveMode = CY_GPIO_DM_OD_DRIVESLOW,
     .hsiom = CYBSP_WIFI_HOST_WAKE_HSIOM,
-    .intEdge = CY_GPIO_INTR_DISABLE,
-    .intMask = 0UL,
+    .intEdge = CY_GPIO_INTR_RISING,
+    .intMask = 1UL,
     .vtrip = CY_GPIO_VTRIP_CMOS,
     .slewRate = CY_GPIO_SLEW_FAST,
     .driveSel = CY_GPIO_DRIVE_1_2,
@@ -951,11 +951,47 @@ const cy_stc_gpio_pin_config_t CYBSP_WIFI_SDIO_D3_config =
     .pullUpRes = CY_GPIO_PULLUP_RES_DISABLE,
     .nonSec = 1,
 };
-const cy_stc_gpio_pin_config_t CYBSP_ADC_6_POT_config =
+const cy_stc_gpio_pin_config_t CYBSP_SPI_9_CLK_config =
 {
     .outVal = 1,
-    .driveMode = CY_GPIO_DM_ANALOG,
-    .hsiom = CYBSP_ADC_6_POT_HSIOM,
+    .driveMode = CY_GPIO_DM_STRONG_IN_OFF,
+    .hsiom = CYBSP_SPI_9_CLK_HSIOM,
+    .intEdge = CY_GPIO_INTR_DISABLE,
+    .intMask = 0UL,
+    .vtrip = CY_GPIO_VTRIP_CMOS,
+    .slewRate = CY_GPIO_SLEW_FAST,
+    .driveSel = CY_GPIO_DRIVE_1_2,
+    .vregEn = 0UL,
+    .ibufMode = 0UL,
+    .vtripSel = 0UL,
+    .vrefSel = 0UL,
+    .vohSel = 0UL,
+    .pullUpRes = CY_GPIO_PULLUP_RES_DISABLE,
+    .nonSec = 1,
+};
+const cy_stc_gpio_pin_config_t CYBSP_SPI_9_MOSI_config =
+{
+    .outVal = 1,
+    .driveMode = CY_GPIO_DM_STRONG_IN_OFF,
+    .hsiom = CYBSP_SPI_9_MOSI_HSIOM,
+    .intEdge = CY_GPIO_INTR_DISABLE,
+    .intMask = 0UL,
+    .vtrip = CY_GPIO_VTRIP_CMOS,
+    .slewRate = CY_GPIO_SLEW_FAST,
+    .driveSel = CY_GPIO_DRIVE_1_2,
+    .vregEn = 0UL,
+    .ibufMode = 0UL,
+    .vtripSel = 0UL,
+    .vrefSel = 0UL,
+    .vohSel = 0UL,
+    .pullUpRes = CY_GPIO_PULLUP_RES_DISABLE,
+    .nonSec = 1,
+};
+const cy_stc_gpio_pin_config_t CYBSP_SPI_9_MISO_config =
+{
+    .outVal = 1,
+    .driveMode = CY_GPIO_DM_HIGHZ,
+    .hsiom = CYBSP_SPI_9_MISO_HSIOM,
     .intEdge = CY_GPIO_INTR_DISABLE,
     .intMask = 0UL,
     .vtrip = CY_GPIO_VTRIP_CMOS,
@@ -1008,7 +1044,7 @@ const cy_stc_gpio_pin_config_t CYBSP_ARD_ADC_5_config =
 const cy_stc_gpio_pin_config_t CYBSP_SPI_CLK_config =
 {
     .outVal = 1,
-    .driveMode = CY_GPIO_DM_STRONG_IN_OFF,
+    .driveMode = CY_GPIO_DM_HIGHZ,
     .hsiom = CYBSP_SPI_CLK_HSIOM,
     .intEdge = CY_GPIO_INTR_DISABLE,
     .intMask = 0UL,
@@ -1026,44 +1062,8 @@ const cy_stc_gpio_pin_config_t CYBSP_SPI_CLK_config =
 const cy_stc_gpio_pin_config_t CYBSP_SPI_MOSI_config =
 {
     .outVal = 1,
-    .driveMode = CY_GPIO_DM_STRONG_IN_OFF,
+    .driveMode = CY_GPIO_DM_STRONG,
     .hsiom = CYBSP_SPI_MOSI_HSIOM,
-    .intEdge = CY_GPIO_INTR_DISABLE,
-    .intMask = 0UL,
-    .vtrip = CY_GPIO_VTRIP_CMOS,
-    .slewRate = CY_GPIO_SLEW_FAST,
-    .driveSel = CY_GPIO_DRIVE_1_2,
-    .vregEn = 0UL,
-    .ibufMode = 0UL,
-    .vtripSel = 0UL,
-    .vrefSel = 0UL,
-    .vohSel = 0UL,
-    .pullUpRes = CY_GPIO_PULLUP_RES_DISABLE,
-    .nonSec = 1,
-};
-const cy_stc_gpio_pin_config_t CYBSP_SPI_MISO_config =
-{
-    .outVal = 1,
-    .driveMode = CY_GPIO_DM_HIGHZ,
-    .hsiom = CYBSP_SPI_MISO_HSIOM,
-    .intEdge = CY_GPIO_INTR_DISABLE,
-    .intMask = 0UL,
-    .vtrip = CY_GPIO_VTRIP_CMOS,
-    .slewRate = CY_GPIO_SLEW_FAST,
-    .driveSel = CY_GPIO_DRIVE_1_2,
-    .vregEn = 0UL,
-    .ibufMode = 0UL,
-    .vtripSel = 0UL,
-    .vrefSel = 0UL,
-    .vohSel = 0UL,
-    .pullUpRes = CY_GPIO_PULLUP_RES_DISABLE,
-    .nonSec = 1,
-};
-const cy_stc_gpio_pin_config_t CYBSP_SPI_CS_config =
-{
-    .outVal = 1,
-    .driveMode = CY_GPIO_DM_STRONG_IN_OFF,
-    .hsiom = CYBSP_SPI_CS_HSIOM,
     .intEdge = CY_GPIO_INTR_DISABLE,
     .intMask = 0UL,
     .vtrip = CY_GPIO_VTRIP_CMOS,
@@ -1419,13 +1419,13 @@ void init_cycfg_pins(void)
     Cy_GPIO_Pin_Init(CYBSP_I2S_TX_FSYNC_PORT, CYBSP_I2S_TX_FSYNC_PIN, &CYBSP_I2S_TX_FSYNC_config);
     Cy_GPIO_Pin_Init(CYBSP_WIFI_SDIO_D2_PORT, CYBSP_WIFI_SDIO_D2_PIN, &CYBSP_WIFI_SDIO_D2_config);
     Cy_GPIO_Pin_Init(CYBSP_WIFI_SDIO_D3_PORT, CYBSP_WIFI_SDIO_D3_PIN, &CYBSP_WIFI_SDIO_D3_config);
-    Cy_GPIO_Pin_Init(CYBSP_ADC_6_POT_PORT, CYBSP_ADC_6_POT_PIN, &CYBSP_ADC_6_POT_config);
+    Cy_GPIO_Pin_Init(CYBSP_SPI_9_CLK_PORT, CYBSP_SPI_9_CLK_PIN, &CYBSP_SPI_9_CLK_config);
+    Cy_GPIO_Pin_Init(CYBSP_SPI_9_MOSI_PORT, CYBSP_SPI_9_MOSI_PIN, &CYBSP_SPI_9_MOSI_config);
+    Cy_GPIO_Pin_Init(CYBSP_SPI_9_MISO_PORT, CYBSP_SPI_9_MISO_PIN, &CYBSP_SPI_9_MISO_config);
     Cy_GPIO_Pin_Init(CYBSP_ARD_ADC_4_PORT, CYBSP_ARD_ADC_4_PIN, &CYBSP_ARD_ADC_4_config);
     Cy_GPIO_Pin_Init(CYBSP_ARD_ADC_5_PORT, CYBSP_ARD_ADC_5_PIN, &CYBSP_ARD_ADC_5_config);
     Cy_GPIO_Pin_Init(CYBSP_SPI_CLK_PORT, CYBSP_SPI_CLK_PIN, &CYBSP_SPI_CLK_config);
     Cy_GPIO_Pin_Init(CYBSP_SPI_MOSI_PORT, CYBSP_SPI_MOSI_PIN, &CYBSP_SPI_MOSI_config);
-    Cy_GPIO_Pin_Init(CYBSP_SPI_MISO_PORT, CYBSP_SPI_MISO_PIN, &CYBSP_SPI_MISO_config);
-    Cy_GPIO_Pin_Init(CYBSP_SPI_CS_PORT, CYBSP_SPI_CS_PIN, &CYBSP_SPI_CS_config);
     Cy_GPIO_Pin_Init(CYBSP_USER_LED3_PORT, CYBSP_USER_LED3_PIN, &CYBSP_USER_LED3_config);
     Cy_GPIO_Pin_Init(CYBSP_USER_LED2_PORT, CYBSP_USER_LED2_PIN, &CYBSP_USER_LED2_config);
     Cy_GPIO_Pin_Init(CYBSP_USER_LED1_PORT, CYBSP_USER_LED1_PIN, &CYBSP_USER_LED1_config);

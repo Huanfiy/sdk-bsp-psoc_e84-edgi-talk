@@ -1,293 +1,245 @@
-/*
- * Copyright (c) 2006-2023, RT-Thread Development Team
+/******************************************************************************
+ * Copyright 2020-2026 The RT-Thread Development Team. All Rights Reserved.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * Change Logs:
- * Date           Author       Notes
- * 2022-07-18     Rbb666       first version
- * 2023-03-30     Rbb666       update spi driver
- */
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *****************************************************************************/
 
-#include <drv_spi.h>
+#include "drv_spi.h"
 
-#ifdef RT_USING_SPI
+#ifdef BSP_USING_SPI
 
+#include <rtdevice.h>
+#include <drivers/pin.h>
+#include "cy_scb_spi.h"
+#include "cy_sysint.h"
+#include "mtb_hal_spi.h"
 
-//#define DRV_DEBUG
-#define DBG_TAG              "drv.spi"
-#ifdef DRV_DEBUG
-    #define DBG_LVL               DBG_LOG
-#else
-    #define DBG_LVL               DBG_INFO
-#endif /* DRV_DEBUG */
-#include <rtdbg.h>
+#define GET_PIN(PORTx, PIN) ((((uint8_t)(PORTx)) << 3U) + ((uint8_t)(PIN)))
+#define INT_PRIORITY        7u
 
-#ifdef BSP_USING_SPI0
-    static struct rt_spi_bus spi_bus0;
-#endif
+struct ifx_spi {
+    struct rt_spi_bus spi_bus;
+    const char* name;
+
+    CySCB_Type* base;
+    cy_stc_scb_spi_config_t runtime_cfg;
+    const cy_stc_scb_spi_config_t* default_cfg;
+    const mtb_hal_spi_configurator_t* hal_cfg;
+    cy_stc_scb_spi_context_t* context;
+    mtb_hal_spi_t spi_obj;
+
+    uint16_t cs_pin;
+
+    cy_stc_sysint_t intr_cfg;
+
+    uint32_t freq;
+    struct rt_completion cpt;
+};
+
 #ifdef BSP_USING_SPI1
-    static struct rt_spi_bus spi_bus1;
-    cy_stc_scb_spi_context_t   scb_9_spi_context;
+static cy_stc_scb_spi_context_t scb_9_spi_context;
+
+extern const cy_stc_scb_spi_config_t CYBSP_SPI_9_config;
+extern const mtb_hal_spi_configurator_t CYBSP_SPI_9_hal_config;
+
+#define scb_9_HW  SCB9
+#define scb_9_IRQ scb_9_interrupt_IRQn
+
+#ifndef BSP_SPI1_CS_PIN
+#define BSP_SPI1_CS_PIN    GET_PIN(15, 3)
 #endif
-#ifdef BSP_USING_SPI3
-    static struct rt_spi_bus spi_bus3;
-#endif
-#ifdef BSP_USING_SPI6
-    static struct rt_spi_bus spi_bus6;
 #endif
 
-static struct ifx_spi_handle spi_bus_obj[] =
-{
-#if defined(BSP_USING_SPI0)
+static struct ifx_spi ifx_spi_obj[] = {
+#ifdef BSP_USING_SPI1
     {
-        .bus_name = "spi0",
-        .sck_pin = GET_PIN(15, 0),
-        .miso_pin = GET_PIN(15, 2),
-        .mosi_pin = GET_PIN(15, 1),
-    },
-#endif
-#if defined(BSP_USING_SPI1)
-    {
-
-        .bus_name = "spi1",
-        .sck_pin = GET_PIN(15, 0),
-        .miso_pin = GET_PIN(15, 2),
-        .mosi_pin = GET_PIN(15, 1),
-
+        .name = "spi1",
         .base = scb_9_HW,
-        .cy_stc_scb_spi_config = &scb_9_config,
-        .mtb_hal_spi_configurator = &scb_9_hal_config,
+        .default_cfg = &CYBSP_SPI_9_config,
+        .hal_cfg = &CYBSP_SPI_9_hal_config,
         .context = &scb_9_spi_context,
-        .intr_cfg = {.intrSrc = scb_9_IRQ, .intrPriority = INT_PRIORITY },
-    },
-#endif
-#if defined(BSP_USING_SPI2)
-    {
-        .bus_name = "spi2",
-        .sck_pin = GET_PIN(8, 0),
-        .miso_pin = GET_PIN(8, 4),
-        .mosi_pin = GET_PIN(8, 1),
-    },
-#endif
-#if defined(BSP_USING_SPI3)
-    {
-        .bus_name = "spi3",
-        .sck_pin = GET_PIN(6, 2),
-        .miso_pin = GET_PIN(6, 1),
-        .mosi_pin = GET_PIN(6, 0),
-    },
-#endif
-#if defined(BSP_USING_SPI6)
-    {
-        .bus_name = "spi6",
-        .sck_pin = GET_PIN(12, 2),
-        .miso_pin = GET_PIN(12, 1),
-        .mosi_pin = GET_PIN(12, 0),
+        .cs_pin = BSP_SPI1_CS_PIN,
+        .intr_cfg = { .intrSrc = scb_9_IRQ, .intrPriority = INT_PRIORITY },
     },
 #endif
 };
 
-static struct ifx_spi spi_config[sizeof(spi_bus_obj) / sizeof(spi_bus_obj[0])] = {0};
-
-/* private rt-thread spi ops function */
-static rt_err_t spi_configure(struct rt_spi_device *device, struct rt_spi_configuration *configuration);
-static rt_ssize_t spixfer(struct rt_spi_device *device, struct rt_spi_message *message);
-
-static struct rt_spi_ops ifx_spi_ops =
+static void ifx_spi_set_cs(struct ifx_spi* spi, rt_base_t level)
 {
-    .configure = spi_configure,
-    .xfer = spixfer,
-};
+    RT_ASSERT(spi);
+    rt_pin_write(spi->cs_pin, level);
+}
 
-
-static void spi_interrupt_callback()
+static void ifx_spi_irq_handler_generic(struct ifx_spi* spi)
 {
     rt_interrupt_enter();
 
-    mtb_hal_spi_process_interrupt(spi_bus_obj[0].spi_obj);
+    mtb_hal_spi_process_interrupt(&spi->spi_obj);
+
+    if (!mtb_hal_spi_is_busy(&spi->spi_obj)) {
+        rt_completion_done(&spi->cpt);
+    }
 
     rt_interrupt_leave();
 }
 
-
-static void spi_event_handler(void* handler_arg, mtb_hal_spi_event_t event)
+#ifdef BSP_USING_SPI1
+static void ifx_spi1_irq_handler(void)
 {
-    rt_kprintf("spi event handler\n");
+    ifx_spi_irq_handler_generic(&ifx_spi_obj[0]);
 }
+#endif
 
-
-static void ifx_spi_init(struct ifx_spi *spi_device)
+static rt_err_t ifx_hw_spi_init(struct ifx_spi* spi)
 {
-    RT_ASSERT(spi_device != RT_NULL);
+    RT_ASSERT(spi);
 
-    rt_err_t result = RT_EOK;
+    /* Configure CS pin as output, set high (inactive) */
+    rt_pin_mode(spi->cs_pin, PIN_MODE_OUTPUT);
+    ifx_spi_set_cs(spi, PIN_HIGH);
 
-    static uint8_t init_flag = 1;
+    spi->runtime_cfg = *spi->default_cfg;
+    if (Cy_SCB_SPI_Init(spi->base, &spi->runtime_cfg, spi->context) != CY_SCB_SPI_SUCCESS)
+        return -RT_ERROR;
+    Cy_SCB_SPI_Enable(spi->base);
 
-    if (init_flag)
-    {
+    if (mtb_hal_spi_setup(&spi->spi_obj, spi->hal_cfg, spi->context, NULL) != CY_RSLT_SUCCESS)
+        return -RT_ERROR;
 
-        result = Cy_SCB_SPI_Init(spi_device->spi_handle_t->base, spi_device->spi_handle_t->cy_stc_scb_spi_config, spi_device->spi_handle_t->context);
-        Cy_SCB_SPI_Enable(spi_device->spi_handle_t->base);
-        result = mtb_hal_spi_setup(spi_device->spi_handle_t->spi_obj, spi_device->spi_handle_t->mtb_hal_spi_configurator, spi_device->spi_handle_t->context, NULL);
-        Cy_SCB_SPI_SetActiveSlaveSelect(spi_device->spi_handle_t->base, CY_SCB_SPI_SLAVE_SELECT0);
+    cy_israddress isr_func = RT_NULL;
+    if (rt_strcmp(spi->name, "spi1") == 0)
+        isr_func = ifx_spi1_irq_handler;
 
-        if (result != RT_EOK)
-        {
-            LOG_E("spi%s init fail", spi_device->spi_handle_t->bus_name);
-            return;
-        }
-
-        Cy_SysInt_Init(&(spi_device->spi_handle_t->intr_cfg), spi_interrupt_callback);
-        NVIC_EnableIRQ(spi_device->spi_handle_t->intr_cfg.intrSrc);
-
-        result = mtb_hal_spi_set_frequency(spi_device->spi_handle_t->spi_obj, spi_device->spi_handle_t->freq);
-        if (result != CY_RSLT_SUCCESS)
-        {
-            LOG_E("%s set frequency fail", spi_device->spi_handle_t->bus_name);
-            return;
-        }
-        LOG_I("[%s] freq:[%d]HZ", spi_device->spi_handle_t->bus_name, spi_device->spi_handle_t->freq);
-
-        /* Register a callback function to be called when the interrupt fires */
-        mtb_hal_spi_register_callback(spi_device->spi_handle_t->spi_obj, (mtb_hal_spi_event_callback_t)spi_event_handler, NULL);
-
-        /* Enable the events that will trigger the call back function */
-        mtb_hal_spi_enable_event(spi_device->spi_handle_t->spi_obj, MTB_HAL_SPI_IRQ_DONE, true);
+    if (isr_func) {
+        Cy_SysInt_Init(&spi->intr_cfg, isr_func);
+        NVIC_EnableIRQ(spi->intr_cfg.intrSrc);
     }
 
-    init_flag = 0;
-}
-
-static rt_err_t spi_configure(struct rt_spi_device *device,
-                              struct rt_spi_configuration *configuration)
-{
-    RT_ASSERT(device != RT_NULL);
-    RT_ASSERT(configuration != RT_NULL);
-
-    struct ifx_spi *spi_device = rt_container_of(device->bus, struct ifx_spi, spi_bus);
-
-    /* data_width */
-    if (configuration->data_width <= 8)
-    {
-        spi_device->spi_handle_t->spi_obj->data_bits = 8;
-    }
-    else if (configuration->data_width <= 16)
-    {
-        spi_device->spi_handle_t->spi_obj->data_bits = 16;
-    }
-    else
-    {
-        return -RT_EIO;
-    }
-
-    uint32_t max_hz;
-    max_hz = configuration->max_hz;
-    spi_device->spi_handle_t->freq = max_hz;
-
-    /* MSB or LSB */
-    switch (configuration->mode & RT_SPI_MODE_3)
-    {
-    case RT_SPI_MODE_0:
-        spi_device->spi_handle_t->cy_stc_scb_spi_config->sclkMode = CY_SCB_SPI_CPHA0_CPOL0;
-        break;
-    case RT_SPI_MODE_1:
-        spi_device->spi_handle_t->cy_stc_scb_spi_config->sclkMode = CY_SCB_SPI_CPHA0_CPOL1;
-        break;
-    case RT_SPI_MODE_2:
-        spi_device->spi_handle_t->cy_stc_scb_spi_config->sclkMode = CY_SCB_SPI_CPHA1_CPOL0;
-        break;
-    case RT_SPI_MODE_3:
-        spi_device->spi_handle_t->cy_stc_scb_spi_config->sclkMode = CY_SCB_SPI_CPHA1_CPOL1;
-        break;
-    }
-    ifx_spi_init(spi_device);
+    rt_completion_init(&spi->cpt);
+    spi->freq = 1000000;
+    if (mtb_hal_spi_set_frequency(&spi->spi_obj, spi->freq) != CY_RSLT_SUCCESS)
+        return -RT_ERROR;
 
     return RT_EOK;
 }
 
-static rt_ssize_t spixfer(struct rt_spi_device *device, struct rt_spi_message *message)
+static rt_err_t spi_configure(struct rt_spi_device* device, struct rt_spi_configuration* cfg)
 {
-    struct ifx_spi *spi_device = rt_container_of(device->bus, struct ifx_spi, spi_bus);
+    RT_ASSERT(device);
+    RT_ASSERT(cfg);
 
-    if (message->cs_take && !(device->config.mode & RT_SPI_NO_CS) && (device->cs_pin != PIN_NONE))
-    {
-        rt_pin_write(device->cs_pin, (device->config.mode & RT_SPI_CS_HIGH) ? PIN_HIGH : PIN_LOW);
+    struct ifx_spi* spi = rt_container_of(device->bus, struct ifx_spi, spi_bus);
+
+    if (cfg->data_width == 0 || cfg->data_width > 16)
+        return -RT_EINVAL;
+
+    spi->spi_obj.data_bits = (cfg->data_width <= 8) ? 8 : 16;
+    spi->freq = cfg->max_hz;
+    if (mtb_hal_spi_set_frequency(&spi->spi_obj, spi->freq) != CY_RSLT_SUCCESS)
+        return -RT_ERROR;
+
+    spi->runtime_cfg.enableMsbFirst = ((cfg->mode & RT_SPI_MSB) == RT_SPI_MSB) ? true : false;
+
+    switch (cfg->mode & RT_SPI_MODE_3) {
+    case RT_SPI_MODE_0:
+        spi->runtime_cfg.sclkMode = CY_SCB_SPI_CPHA0_CPOL0;
+        break;
+    case RT_SPI_MODE_1:
+        spi->runtime_cfg.sclkMode = CY_SCB_SPI_CPHA1_CPOL0;
+        break;
+    case RT_SPI_MODE_2:
+        spi->runtime_cfg.sclkMode = CY_SCB_SPI_CPHA0_CPOL1;
+        break;
+    case RT_SPI_MODE_3:
+        spi->runtime_cfg.sclkMode = CY_SCB_SPI_CPHA1_CPOL1;
+        break;
     }
 
-    int result = RT_EOK;
-    if (message->length > 0)
-    {
-        result = mtb_hal_spi_transfer(spi_device->spi_handle_t->spi_obj, message->send_buf, message->length, message->recv_buf, message->length, 0);
-        if (result != RT_EOK)
-        {
-            rt_kprintf("spi transfer failed.\n");
+    Cy_SCB_SPI_Disable(spi->base, spi->context);
+    if (Cy_SCB_SPI_Init(spi->base, &spi->runtime_cfg, spi->context) != CY_SCB_SPI_SUCCESS) {
+        rt_kprintf("Cy_SCB_SPI_Init fail!!\n");
+        return -RT_ERROR;
+    }
+
+    Cy_SCB_SPI_Enable(spi->base);
+
+    return RT_EOK;
+}
+
+static rt_ssize_t spixfer(struct rt_spi_device* device, struct rt_spi_message* message)
+{
+    RT_ASSERT(device);
+    RT_ASSERT(message);
+
+    struct ifx_spi* spi = rt_container_of(device->bus, struct ifx_spi, spi_bus);
+    cy_rslt_t result = CY_RSLT_SUCCESS;
+    rt_err_t wait_ret = RT_EOK;
+
+    if (message->cs_take && !(device->config.mode & RT_SPI_NO_CS)) {
+        ifx_spi_set_cs(spi, (device->config.mode & RT_SPI_CS_HIGH) ? PIN_HIGH : PIN_LOW);
+    }
+
+    if (message->length > 0) {
+        if (message->send_buf == RT_NULL && message->recv_buf == RT_NULL) {
+            result = (cy_rslt_t)-RT_EINVAL;
+            goto __exit;
+        }
+
+        mtb_hal_spi_clear(&spi->spi_obj);
+        rt_completion_init(&spi->cpt);
+
+        if (message->send_buf == RT_NULL && message->recv_buf != RT_NULL) {
+            result = mtb_hal_spi_transfer(&spi->spi_obj, RT_NULL, 0x00, message->recv_buf, message->length, 0x00);
+        } else if (message->send_buf != RT_NULL && message->recv_buf == RT_NULL) {
+            result = mtb_hal_spi_transfer(&spi->spi_obj, message->send_buf, message->length, RT_NULL, 0x00, 0x00);
+        } else if (message->send_buf != RT_NULL && message->recv_buf != RT_NULL) {
+            result = mtb_hal_spi_transfer(&spi->spi_obj, message->send_buf, message->length, message->recv_buf, message->length, 0x00);
+        }
+        if (result == CY_RSLT_SUCCESS) {
+            wait_ret = rt_completion_wait(&spi->cpt, RT_WAITING_FOREVER);
         }
     }
 
-    if (message->cs_release && !(device->config.mode & RT_SPI_NO_CS) && (device->cs_pin != PIN_NONE))
-    {
-        rt_pin_write(device->cs_pin, (device->config.mode & RT_SPI_CS_HIGH) ? PIN_LOW : PIN_HIGH);
-    }
-    return (result == RT_EOK) ? message->length : -RT_ERROR;
-}
-
-/**
-  * Attach the spi device to SPI bus, this function must be used after initialization.
-  */
-rt_err_t rt_hw_spi_device_attach(const char *bus_name, const char *device_name, rt_base_t cs_pin)
-{
-    RT_ASSERT(bus_name != RT_NULL);
-    RT_ASSERT(device_name != RT_NULL);
-
-    rt_err_t result;
-    struct rt_spi_device *spi_device;
-
-    /* attach the device to spi bus*/
-    spi_device = (struct rt_spi_device *)rt_malloc(sizeof(struct rt_spi_device));
-    RT_ASSERT(spi_device != RT_NULL);
-
-    result = rt_spi_bus_attach_device_cspin(spi_device, device_name, bus_name, cs_pin, RT_NULL);
-    if (result != RT_EOK)
-    {
-        LOG_E("%s attach to %s faild, %d\n", device_name, bus_name, result);
+__exit:
+    if (message->cs_release && !(device->config.mode & RT_SPI_NO_CS)) {
+        ifx_spi_set_cs(spi, (device->config.mode & RT_SPI_CS_HIGH) ? PIN_LOW : PIN_HIGH);
     }
 
-    RT_ASSERT(result == RT_EOK);
+    if (result != CY_RSLT_SUCCESS || wait_ret != RT_EOK)
+        return 0;
 
-    LOG_D("%s attach to %s done", device_name, bus_name);
-
-    return result;
+    return message->length;
 }
 
-int rt_hw_spi_init(void)
+static const struct rt_spi_ops ifx_spi_ops = {
+    .configure = spi_configure,
+    .xfer = spixfer,
+};
+
+static int rt_hw_spi_init(void)
 {
-    int result = RT_EOK;
+    for (int i = 0; i < sizeof(ifx_spi_obj) / sizeof(ifx_spi_obj[0]); i++) {
+        struct ifx_spi* obj = &ifx_spi_obj[i];
 
-    for (int spi_index = 0; spi_index < sizeof(spi_bus_obj) / sizeof(spi_bus_obj[0]); spi_index++)
-    {
-        spi_bus_obj[spi_index].spi_obj = rt_malloc(sizeof(mtb_hal_spi_t));
-        RT_ASSERT(spi_bus_obj[spi_index].spi_obj != RT_NULL);
-
-        spi_config[spi_index].spi_handle_t = &spi_bus_obj[spi_index];
-
-        rt_err_t err = rt_spi_bus_register(&spi_config[spi_index].spi_bus, spi_bus_obj[spi_index].bus_name, &ifx_spi_ops);
-        if (RT_EOK != err)
-        {
-            LOG_E("%s bus register failed.", spi_config[spi_index].spi_handle_t->bus_name);
+        if (ifx_hw_spi_init(obj) == RT_EOK) {
+            if (rt_spi_bus_register(&obj->spi_bus, obj->name, &ifx_spi_ops) != RT_EOK)
+                return -RT_ERROR;
+        } else {
             return -RT_ERROR;
         }
-
-        LOG_D("MOSI PIN:[%d], MISO PIN[%d], CLK PIN[%d]\n",
-              spi_bus_obj[spi_index].mosi_pin, spi_bus_obj[spi_index].miso_pin,
-              spi_bus_obj[spi_index].sck_pin);
-
-        /* initialize completion object */
-        rt_completion_init(&spi_config[spi_index].cpt);
     }
-
-    return result;
+    return RT_EOK;
 }
 INIT_BOARD_EXPORT(rt_hw_spi_init);
-#endif /* RT_USING_SPI */
+
+#endif /* BSP_USING_SPI */
