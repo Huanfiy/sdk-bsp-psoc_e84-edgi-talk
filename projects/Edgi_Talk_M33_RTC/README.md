@@ -84,6 +84,7 @@ RTC consists of a **low-power oscillator + counter**:
 * The structure clearly demonstrates RTC driver usage on **M33 core**.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -116,6 +117,8 @@ Tue Jul  1 23:59:53 2025
 ```
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * Ensure RTC is properly connected and recognized by the system.
 * To modify the graphical configuration:

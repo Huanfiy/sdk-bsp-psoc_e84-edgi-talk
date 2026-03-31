@@ -24,6 +24,7 @@ This project can also serve as a **template** for further development or project
 * The project structure is clear, making it a good starting point for learning RT-Thread or developing applications.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -45,6 +46,8 @@ This project can also serve as a **template** for further development or project
 * The **blue LED** will blink periodically, indicating that the RT-Thread scheduler has started successfully.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, use the following tools:
 

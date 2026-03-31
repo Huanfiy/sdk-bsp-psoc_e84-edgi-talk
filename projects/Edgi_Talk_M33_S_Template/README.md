@@ -19,6 +19,7 @@ It can also serve as a **template** for further development or project creation,
 * The project code is structured clearly, making it easy to understand and port.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -32,6 +33,8 @@ It can also serve as a **template** for further development or project creation,
 * It will successfully boot into the **M33 core**, indicating that the secure configuration is effective.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, use the following tools:
 

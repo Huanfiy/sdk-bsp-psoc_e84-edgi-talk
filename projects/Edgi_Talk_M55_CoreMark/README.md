@@ -47,6 +47,7 @@ The output is represented as **CoreMark/MHz** or **CoreMark**, which allows perf
 * The project has a clean structure, making it easy to understand the M55 startup process and performance testing method.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -98,6 +99,8 @@ CoreMark 1.0 : 1200 / GCC10.2.1 20201103 (release)  / STACK
 ```
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration** of the project, open the configuration file using the following tool:
 

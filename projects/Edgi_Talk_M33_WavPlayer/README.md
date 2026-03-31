@@ -49,6 +49,7 @@ It allows users to experience WAV file parsing, playback mechanism, and verify a
 * Provides a clear example of **audio playback driver integration with RT-Thread filesystem**.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 

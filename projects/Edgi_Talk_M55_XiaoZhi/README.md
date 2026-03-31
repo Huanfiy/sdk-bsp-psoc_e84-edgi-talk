@@ -17,6 +17,7 @@ With this project, users can quickly verify the device’s **WiFi connection**, 
   * Device state management (standby, listening, sleep, etc.)
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Prepare Wi-Fi resources (first-time setup)
 
@@ -91,6 +92,8 @@ Each command switches to YMODEM mode. Use a terminal that supports YMODEM upload
   ![alt text](figures/3.png)
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * For first-time use, visit the [XiaoZhi official website](https://xiaozhi.me/) to complete backend binding.
   ![alt text](figures/2.png)

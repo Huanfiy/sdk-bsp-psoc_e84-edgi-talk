@@ -52,6 +52,7 @@ The position of the LEDs on the development board is shown below:
 * The project structure is simple and helps users understand LED control logic and hardware driver interfaces.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -66,6 +67,8 @@ The position of the LEDs on the development board is shown below:
 * Users can modify the blinking period or LED control logic as needed.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration** of the project, open the configuration file using the following tool:
 

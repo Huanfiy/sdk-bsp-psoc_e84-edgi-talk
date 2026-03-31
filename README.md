@@ -63,6 +63,8 @@ $ sdk-bsp-psoc_e84-edgi-talk
 
 `sdk-bsp-psoc_e84-edgi-talk` supports development using **RT-Thread Studio**.
 
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
+
 ## **RT-Thread Studio Development Steps**
 
 1. Open RT-Thread Studio and install the Edgi-Talk BSP (latest version recommended).
@@ -75,6 +77,8 @@ $ sdk-bsp-psoc_e84-edgi-talk
    Compilation, download, and debugging can be done directly inside RT-Thread Studio.
    ![Build](docs/figures/3.png)
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration** of the project, use the following tool to open the configuration file:
 

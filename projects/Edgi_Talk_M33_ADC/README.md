@@ -89,6 +89,8 @@ ADC operation typically involves the following stages:
 
 ## Notes
 
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
+
 * To modify the **graphical configuration** of the project, open the configuration file using the following tool:
 
   ```

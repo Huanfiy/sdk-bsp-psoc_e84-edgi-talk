@@ -63,6 +63,7 @@ $ sdk-bsp-psoc_e84-edgi-talk
 
 `sdk-bsp-psoc_e84-edgi-talk` 支持 **RT-Thread Studio**开发方式。
 
+
 ## **RT-Thread Studio 开发步骤**
 
 1. 打开 RT-Thread Studio，安装 Edgi-Talk 开发板支持包（建议安装最新版本）。
@@ -75,6 +76,8 @@ $ sdk-bsp-psoc_e84-edgi-talk
    ![编译](docs/figures/3.png)
 
 ## 注意事项
+
+> **⚠️ 注意：** 本工程要求使用 **RT-Thread Studio 2.2.9** 或以上版本。
 
 * 如需修改工程的 **图形化配置**，请使用以下工具打开配置文件：
 

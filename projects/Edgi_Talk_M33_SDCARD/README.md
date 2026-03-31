@@ -91,6 +91,7 @@ Key features:
 * Provides a clear example of **RT-Thread filesystem and SD card interface usage**.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -136,6 +137,8 @@ Hello RT-Thread SDCARD!
 * `echo` writes strings to files, `cat` reads and displays file content.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * Ensure the SD card is inserted and formatted with FAT filesystem (FAT16/FAT32).
 * To modify graphical configuration:

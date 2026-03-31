@@ -102,6 +102,7 @@ Internally it uses DRAM technology with **self-refresh**, but externally it beha
 * The project code structure is simple and clear, making it easy to understand and port.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -115,6 +116,8 @@ Internally it uses DRAM technology with **self-refresh**, but externally it beha
 * The system will start successfully and jump to the **M33 core**, indicating that the secure configuration is effective.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, open the configuration file using the following tool:
 

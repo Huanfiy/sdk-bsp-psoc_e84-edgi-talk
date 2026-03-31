@@ -193,6 +193,8 @@ The following parameters can be modified in `libraries/HAL_Drivers/ipc_common.h`
 
 ## Notes
 
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
+
 * This project targets M33 core as IPC sender.
 * For M55 receiver, see [projects/Edgi_Talk_IPC/Edgi_Talk_M55_IPC/README.md](../Edgi_Talk_M55_IPC/README.md).
 * IPC driver is located at `libraries/HAL_Drivers/drv_ipc.c`.

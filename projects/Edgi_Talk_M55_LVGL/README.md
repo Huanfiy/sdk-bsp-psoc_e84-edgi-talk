@@ -82,6 +82,7 @@ LVGL is **MIT licensed** and supported by **SquareLine Studio** for GUI design a
 * Code structure is clear for understanding display driver integration and LVGL porting.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -95,6 +96,8 @@ LVGL is **MIT licensed** and supported by **SquareLine Studio** for GUI design a
 * Users can modify `applications/main.c` to switch to other LVGL demos (e.g., `lv_demo_widgets`, `lv_demo_music`).
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, use:
 

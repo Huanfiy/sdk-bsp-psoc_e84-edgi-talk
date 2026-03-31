@@ -43,6 +43,7 @@ INIT_BOARD_EXPORT(hyperam_init);
 ```
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -55,6 +56,8 @@ INIT_BOARD_EXPORT(hyperam_init);
 * After flashing, power on the board to run the example project.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration** of the project, open the configuration file using the following tool:
 

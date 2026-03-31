@@ -76,6 +76,8 @@ msh >[I/aht10] AHT10 has been initialized!
 
 ## Notes
 
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
+
 * To modify the **graphical configuration** of the project, open the configuration file using the following tool:
 
 ```

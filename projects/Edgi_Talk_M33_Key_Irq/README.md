@@ -66,6 +66,7 @@ Key interrupt features:
   * Blue LED blinks at a 500ms period, indicating normal system operation
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -84,6 +85,8 @@ The button is pressed
 ```
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, open the configuration file using the following tool:
 

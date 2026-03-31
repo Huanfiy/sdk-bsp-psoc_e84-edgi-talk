@@ -44,6 +44,7 @@ It allows users to quickly validate the **MIPI DSI interface driver** and **LCD 
 * The project structure is simple, making it easy to understand the **MIPI DSI initialization** and **LCD refresh logic**.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -58,6 +59,8 @@ It allows users to quickly validate the **MIPI DSI interface driver** and **LCD 
 * The refresh process loops continuously. Users can adjust the refresh period or add more test patterns as needed.
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, use the following tools:
 

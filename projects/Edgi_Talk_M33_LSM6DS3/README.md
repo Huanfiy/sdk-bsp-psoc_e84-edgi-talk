@@ -60,6 +60,7 @@ Through this example, users can learn to:
   * Print sensor data to the serial terminal
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -82,6 +83,8 @@ Temperature [degC]:  26.54
 ---
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * To modify the **graphical configuration**, open the configuration file using the following tool:
 

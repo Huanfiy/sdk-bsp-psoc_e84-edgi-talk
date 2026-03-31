@@ -34,6 +34,7 @@ It allows users to quickly test Wi-Fi scanning, connection, and performance, ver
 * Provides a clear example of **Wi-Fi driver integration with RT-Thread**.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 

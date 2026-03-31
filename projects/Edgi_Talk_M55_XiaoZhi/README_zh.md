@@ -93,6 +93,8 @@ whd_res_download whd_nvram
 
 ## 注意事项
 
+> **⚠️ 注意：** 本工程要求使用 **RT-Thread Studio 2.2.9** 或以上版本。
+
 * 第一次需要进入 [小智官网](https://xiaozhi.me/) 进行后台绑定
   ![alt text](figures/2.png)
   按下用户按键屏幕显示验证码

@@ -65,6 +65,8 @@ The M55 core depends on the M33 boot flow. Flash in this order:
 
 ## Notes
 
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
+
 * This project targets the M33 core in USB host mode.
 * For device mode, see [projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_D/README.md](../Edgi_Talk_M33_USB_D/README.md).
 * For M55 host mode, see [projects/Edgi_Talk_CherryUSB/Edgi_Talk_M55_USB_H/README.md](../Edgi_Talk_M55_USB_H/README.md).

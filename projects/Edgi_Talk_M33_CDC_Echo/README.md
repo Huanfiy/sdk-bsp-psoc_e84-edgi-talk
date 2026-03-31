@@ -37,6 +37,7 @@ Through this project, users can quickly experience USB CDC device communication 
 * The project structure is clear, making it easy to understand how the USB device driver runs on the **M33 core**.
 
 ## Usage
+n> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 ### Build and Download
 
@@ -80,6 +81,8 @@ hello
 ```
 
 ## Notes
+
+> **⚠️ Note:** This project requires **RT-Thread Studio 2.2.9** or higher.
 
 * **Echo trigger condition**:
   Echo occurs only when the last character of the received data is a **newline `\n`**.

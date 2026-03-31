@@ -64,6 +64,8 @@ M55 依赖 M33 启动流程，烧录顺序如下：
 
 ## 说明
 
+> **⚠️ 注意：** 本工程要求使用 **RT-Thread Studio 2.2.9** 或以上版本。
+
 * 本工程面向 M33 核心的 USB 设备模式。
 * 主机模式请参考 [projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H/README.md](../Edgi_Talk_M33_USB_H/README.md)。
 * M55 设备模式请参考 [projects/Edgi_Talk_CherryUSB/Edgi_Talk_M55_USB_D/README.md](../Edgi_Talk_M55_USB_D/README.md)。
