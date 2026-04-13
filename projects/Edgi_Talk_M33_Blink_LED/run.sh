@@ -30,10 +30,20 @@ do_flash() {
         exit 1
     fi
 
+    # SMIF_BANKS 定义外部 QSPI Flash 地址区间，必须在加载 target 配置之前设置，
+    # 否则 OpenOCD 不会创建 SMIF flash bank，导致 0x60/0x70 区域写 0 字节。
+    SMIF_BANKS_TCL='array set SMIF_BANKS {
+        0 {addr 0x60000000 size 0x4000000}
+        1 {addr 0x64000000 size 0x4000000}
+        2 {addr 0x70000000 size 0x4000000}
+        3 {addr 0x74000000 size 0x4000000}
+    }'
+
     echo "==> 使用 Infineon OpenOCD 烧录: $FLASH_HEX"
     "$OPENOCD" \
         -s "$OPENOCD_ROOT/scripts" \
         -f interface/kitprog3.cfg \
+        -c "$SMIF_BANKS_TCL" \
         -f target/infineon/pse84xgxs2.cfg \
         -c "transport select swd" \
         -c "cat1d.cm33 configure -rtos auto -rtos-wipe-on-reset-halt 1" \
