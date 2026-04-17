@@ -637,18 +637,60 @@ static void dwc2_bulk_intr_urb_init(struct usbh_bus *bus, uint8_t chidx, struct 
     dwc2_chan_transfer(bus, chidx, urb->ep->bEndpointAddress, buffer, chan->xferlen, chan->num_packets, urb->data_toggle == 0 ? HC_PID_DATA0 : HC_PID_DATA1);
 }
 
-#if 0
+/* forward decl: implementation lives further down with the IRQ helpers */
+static inline void dwc2_urb_waitup(struct usbh_urb *urb);
+
+/* ISO transfer support (single iso_frame_packet per channel arming).
+ * Caller (urb submit / inchan IRQ) is responsible for advancing chan->iso_frame_idx
+ * across urb->iso_packet[]. ODDFRM and HCDMA are programmed by dwc2_chan_transfer().
+ */
 static void dwc2_iso_urb_init(struct usbh_bus *bus, uint8_t chidx, struct usbh_urb *urb, struct usbh_iso_frame_packet *iso_packet)
 {
     struct dwc2_chan *chan;
 
     chan = &g_dwc2_hcd[bus->hcd.hcd_id].chan_pool[chidx];
 
-    chan->num_packets = dwc2_calculate_packet_num(iso_packet->transfer_buffer_length, urb->ep->bEndpointAddress, USB_GET_MAXPACKETSIZE(urb->ep->wMaxPacketSize), &chan->xferlen);
-    dwc2_chan_init(bus, chidx, urb->hport->dev_addr, urb->ep->bEndpointAddress, USB_ENDPOINT_TYPE_ISOCHRONOUS, USB_GET_MAXPACKETSIZE(urb->ep->wMaxPacketSize), urb->hport->speed);
-    dwc2_chan_transfer(bus, chidx, urb->ep->bEndpointAddress, iso_packet->transfer_buffer, chan->xferlen, chan->num_packets, HC_PID_DATA0);
+    chan->num_packets = dwc2_calculate_packet_num(iso_packet->transfer_buffer_length,
+                                                  urb->ep->bEndpointAddress,
+                                                  USB_GET_MAXPACKETSIZE(urb->ep->wMaxPacketSize),
+                                                  &chan->xferlen);
+    dwc2_chan_init(bus,
+                   chidx,
+                   urb->hport->dev_addr,
+                   urb->ep->bEndpointAddress,
+                   USB_ENDPOINT_TYPE_ISOCHRONOUS,
+                   USB_GET_MAXPACKETSIZE(urb->ep->wMaxPacketSize),
+                   USB_GET_MULT(urb->ep->wMaxPacketSize) + 1,
+                   urb->hport->speed);
+    dwc2_chan_transfer(bus, chidx, urb->ep->bEndpointAddress,
+                       iso_packet->transfer_buffer,
+                       chan->xferlen, chan->num_packets, HC_PID_DATA0);
 }
-#endif
+
+/* Mark the current iso frame slot with errorcode and either schedule the next
+ * frame on the same channel or finalize the urb when all frames are processed.
+ * Called from inchan / outchan IRQ handlers when an ISO transfer aborts on a
+ * non-XFRC condition (FRMOR / DTERR / BBERR / AHBERR / TXERR).
+ */
+static void dwc2_iso_advance_or_finish(struct usbh_bus *bus, uint8_t ch_num,
+                                       struct usbh_urb *urb, int frame_errorcode)
+{
+    struct dwc2_chan *chan = &g_dwc2_hcd[bus->hcd.hcd_id].chan_pool[ch_num];
+
+    if (chan->iso_frame_idx < urb->num_of_iso_packets) {
+        urb->iso_packet[chan->iso_frame_idx].actual_length = 0;
+        urb->iso_packet[chan->iso_frame_idx].errorcode = frame_errorcode;
+        chan->iso_frame_idx++;
+    }
+
+    if (chan->iso_frame_idx >= urb->num_of_iso_packets) {
+        /* whole urb finished; per-packet errorcode is preserved for the user */
+        urb->errorcode = 0;
+        dwc2_urb_waitup(urb);
+    } else {
+        dwc2_iso_urb_init(bus, ch_num, urb, &urb->iso_packet[chan->iso_frame_idx]);
+    }
+}
 
 __WEAK void usb_hc_low_level_init(struct usbh_bus *bus)
 {
@@ -1061,6 +1103,13 @@ int usbh_submit_urb(struct usbh_urb *urb)
             dwc2_bulk_intr_urb_init(bus, chidx, urb, urb->transfer_buffer, urb->transfer_buffer_length);
             break;
         case USB_ENDPOINT_TYPE_ISOCHRONOUS:
+            if (urb->num_of_iso_packets == 0) {
+                urb->errorcode = -USB_ERR_INVAL;
+                dwc2_chan_free(chan);
+                return -USB_ERR_INVAL;
+            }
+            chan->iso_frame_idx = 0;
+            dwc2_iso_urb_init(bus, chidx, urb, &urb->iso_packet[0]);
             break;
         default:
             break;
@@ -1186,6 +1235,17 @@ static void dwc2_inchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
                     dwc2_urb_waitup(urb);
                 }
             } else if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                if (chan->iso_frame_idx < urb->num_of_iso_packets) {
+                    urb->iso_packet[chan->iso_frame_idx].actual_length = count;
+                    urb->iso_packet[chan->iso_frame_idx].errorcode = 0;
+                    chan->iso_frame_idx++;
+                }
+                if (chan->iso_frame_idx >= urb->num_of_iso_packets) {
+                    urb->errorcode = 0;
+                    dwc2_urb_waitup(urb);
+                } else {
+                    dwc2_iso_urb_init(bus, ch_num, urb, &urb->iso_packet[chan->iso_frame_idx]);
+                }
             } else {
                 if (chan->do_ssplit && urb->transfer_buffer_length > 0 && (count == USB_GET_MAXPACKETSIZE(urb->ep->wMaxPacketSize))) {
                     dwc2_bulk_intr_urb_init(bus, ch_num, urb, urb->transfer_buffer + urb->actual_length, urb->transfer_buffer_length);
@@ -1196,8 +1256,12 @@ static void dwc2_inchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
                 }
             }
         } else if (chan_intstatus & USB_OTG_HCINT_AHBERR) {
-            urb->errorcode = -USB_ERR_IO;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_IO);
+            } else {
+                urb->errorcode = -USB_ERR_IO;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_STALL) {
             urb->errorcode = -USB_ERR_STALL;
             dwc2_urb_waitup(urb);
@@ -1267,17 +1331,34 @@ static void dwc2_inchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
                 dwc2_urb_waitup(urb);
             }
         } else if (chan_intstatus & USB_OTG_HCINT_TXERR) {
-            urb->errorcode = -USB_ERR_IO;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_IO);
+            } else {
+                urb->errorcode = -USB_ERR_IO;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_BBERR) {
-            urb->errorcode = -USB_ERR_BABBLE;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_BABBLE);
+            } else {
+                urb->errorcode = -USB_ERR_BABBLE;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_DTERR) {
-            urb->errorcode = -USB_ERR_DT;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_DT);
+            } else {
+                urb->errorcode = -USB_ERR_DT;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_FRMOR) {
-            urb->errorcode = -USB_ERR_IO;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                /* frame overrun: this packet was not delivered in time, advance to next */
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_IO);
+            } else {
+                urb->errorcode = -USB_ERR_IO;
+                dwc2_urb_waitup(urb);
+            }
         }
     }
 }
@@ -1349,6 +1430,17 @@ static void dwc2_outchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
                     dwc2_urb_waitup(urb);
                 }
             } else if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                if (chan->iso_frame_idx < urb->num_of_iso_packets) {
+                    urb->iso_packet[chan->iso_frame_idx].actual_length = olen;
+                    urb->iso_packet[chan->iso_frame_idx].errorcode = 0;
+                    chan->iso_frame_idx++;
+                }
+                if (chan->iso_frame_idx >= urb->num_of_iso_packets) {
+                    urb->errorcode = 0;
+                    dwc2_urb_waitup(urb);
+                } else {
+                    dwc2_iso_urb_init(bus, ch_num, urb, &urb->iso_packet[chan->iso_frame_idx]);
+                }
             } else {
                 if (chan->do_ssplit && urb->transfer_buffer_length > 0) {
                     dwc2_bulk_intr_urb_init(bus, ch_num, urb, urb->transfer_buffer + urb->actual_length, urb->transfer_buffer_length);
@@ -1358,8 +1450,12 @@ static void dwc2_outchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
                 }
             }
         } else if (chan_intstatus & USB_OTG_HCINT_AHBERR) {
-            urb->errorcode = -USB_ERR_IO;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_IO);
+            } else {
+                urb->errorcode = -USB_ERR_IO;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_STALL) {
             urb->errorcode = -USB_ERR_STALL;
             dwc2_urb_waitup(urb);
@@ -1429,17 +1525,33 @@ static void dwc2_outchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
                 dwc2_urb_waitup(urb);
             }
         } else if (chan_intstatus & USB_OTG_HCINT_TXERR) {
-            urb->errorcode = -USB_ERR_IO;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_IO);
+            } else {
+                urb->errorcode = -USB_ERR_IO;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_BBERR) {
-            urb->errorcode = -USB_ERR_BABBLE;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_BABBLE);
+            } else {
+                urb->errorcode = -USB_ERR_BABBLE;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_DTERR) {
-            urb->errorcode = -USB_ERR_DT;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_DT);
+            } else {
+                urb->errorcode = -USB_ERR_DT;
+                dwc2_urb_waitup(urb);
+            }
         } else if (chan_intstatus & USB_OTG_HCINT_FRMOR) {
-            urb->errorcode = -USB_ERR_IO;
-            dwc2_urb_waitup(urb);
+            if (USB_GET_ENDPOINT_TYPE(urb->ep->bmAttributes) == USB_ENDPOINT_TYPE_ISOCHRONOUS) {
+                dwc2_iso_advance_or_finish(bus, ch_num, urb, -USB_ERR_IO);
+            } else {
+                urb->errorcode = -USB_ERR_IO;
+                dwc2_urb_waitup(urb);
+            }
         }
     }
 }

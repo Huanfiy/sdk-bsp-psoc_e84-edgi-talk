@@ -381,7 +381,11 @@ static int usbh_audio_ctrl_connect(struct usbh_hubport *hport, uint8_t intf)
 {
     int ret;
     uint8_t cur_iface = 0;
-    uint8_t cur_iface_count = 0;
+    /* sentinel: 0xff means we have not seen an IAD yet. UAC 1.0 devices are
+     * allowed to omit IAD when there is only a single audio function on the
+     * device (and an HID control surface alongside is also common); fall back
+     * to bNumInterfaces in that case below. */
+    uint8_t cur_iface_count = 0xff;
     uint8_t cur_alt_setting = 0;
     uint8_t input_offset = 0;
     uint8_t output_offset = 0;
@@ -481,8 +485,19 @@ static int usbh_audio_ctrl_connect(struct usbh_hubport *hport, uint8_t intf)
     }
 
     if (cur_iface_count == 0xff) {
-        USB_LOG_ERR("Audio descriptor must have iad descriptor\r\n");
-        return -USB_ERR_INVAL;
+        /* No IAD found; treat all interfaces from ctrl_intf to the end of the
+         * configuration as belonging to this audio function. With cur_iface_count
+         * staying at 0xff the (cur_iface < ctrl_intf + cur_iface_count) checks
+         * inside the loop above already accept every later interface, so the AS
+         * descriptors have already been collected correctly. */
+        uint8_t total_intf = hport->config.config_desc.bNumInterfaces;
+        if (total_intf > intf) {
+            cur_iface_count = total_intf - intf;
+        } else {
+            cur_iface_count = 1;
+        }
+        USB_LOG_INFO("Audio device has no IAD, fallback to %u interfaces from ctrl_intf %u\r\n",
+                     cur_iface_count, intf);
     }
 
     audio_class->stream_intf_num = input_offset;
