@@ -69,7 +69,7 @@
 #define SPK_RING_BYTES           (32U * 1024U)
 
 #define SPK_SOUND_DEV_NAME       "sound0"
-#define SPK_DEFAULT_VOLUME       60
+#define SPK_DEFAULT_VOLUME       80
 
 /* ---- USB audio sample buffers (must be DMA reachable, non-cacheable) - */
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX
