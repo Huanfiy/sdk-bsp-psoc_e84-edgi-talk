@@ -140,48 +140,40 @@ void ifx_i2s_deinit()
 void ifx_set_samplerate(struct rt_audio_configure audio_config)
 {
     Cy_SysClk_PeriPclkDisableDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U);
-    if (audio_config.channels == 1)
+    /* The generated TDM/I2S hardware configuration is fixed to a 2-channel
+     * output frame (`channelNum = 2`, `clkDiv = 4`). The runtime audio core
+     * still feeds mono samples which drv_i2s expands to stereo in software,
+     * so the source stream channel count must NOT be used to pick the I2S
+     * bit-clock divider. Keep the divider tied only to the target sample
+     * rate, using the same divider series implied by the generated 16 kHz
+     * default (23 -> divide-by-24). */
+    uint32_t frac_div;
+    switch (audio_config.samplerate)
     {
-        switch (audio_config.samplerate)
-        {
-            case 16000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 24U, 0U);
-                break;
-            case 24000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 16U, 0U);
-                break;
-            case 48000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 8U, 0U);
-                break;
-            case 96000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 3U, 0U);
-                break;
-            default:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 24U, 0U);
-                break;
-        }
+        case 16000:
+            frac_div = 23U;
+            break;
+        case 24000:
+            frac_div = 15U;
+            break;
+        case 48000:
+            frac_div = 7U;
+            break;
+        case 96000:
+            frac_div = 3U;
+            break;
+        default:
+            frac_div = 23U;
+            audio_config.samplerate = 16000;
+            break;
     }
-    else
-    {
-        switch (audio_config.samplerate)
-        {
-            case 16000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 11U, 0U);
-                break;
-            case 24000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 7U, 0U);
-                break;
-            case 48000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 3U, 0U);
-                break;
-            case 96000:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 1U, 0U);
-                break;
-            default:
-                Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 11U, 0U);
-                break;
-        }
-    }
+
+    Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM,
+                                     CY_SYSCLK_DIV_16_5_BIT, 0U, frac_div, 0U);
+    LOG_I("set tdm samplerate=%d src_ch=%d frac_div=%u",
+          audio_config.samplerate,
+          audio_config.channels,
+          (unsigned)frac_div);
     #if defined(BSP_USING_XiaoZhi)
         Cy_SysClk_PeriPclkSetFracDivider((en_clk_dst_t)CYBSP_TDM_CONTROLLER_0_CLK_DIV_GRP_NUM, CY_SYSCLK_DIV_16_5_BIT, 0U, 15U, 0U);
     #endif
@@ -585,7 +577,9 @@ void i2s_playback_task(void *arg)
     struct sound_device *snd_dev;
     RT_ASSERT(audio != RT_NULL);
     snd_dev = (struct sound_device *)audio->parent.user_data;
+#if defined(PKG_USING_WAVPLAYER) && !defined(BSP_USING_XiaoZhi)
     static int count = 0;
+#endif
     int16_t *temp_buffer_ptr;
 
     // int32_t* asrc_out_ptr = NULL;

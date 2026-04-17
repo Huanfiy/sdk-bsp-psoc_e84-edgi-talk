@@ -7,9 +7,9 @@
  *       v  dwc2 IRQ -> mic_iso_complete()
  *   ring buffer (raw stereo PCM, lock-free single-producer/single-consumer)
  *       v  mic_uac worker thread (wakes on sem from IRQ)
- *   3:1 decimation + stereo->mono mix  (48 kHz stereo -> 16 kHz mono)
- *       v  rt_device_write(sound0)  every 64 ms
- *   ES8388 DAC (16 kHz stereo out, duplicated L/R) -> PA -> speaker
+ *   stereo->mono mix at 48 kHz
+ *       v  rt_device_write(sound0)
+ *   ES8388 DAC -> PA -> speaker
  *
  * Runtime control: `usbh_audio_run` / `usbh_audio_stop` are invoked by
  * the CherryUSB host stack on attach/detach. On attach a single worker
@@ -48,16 +48,18 @@
      MIC_ISO_PACKETS_PER_URB * sizeof(struct usbh_iso_frame_packet))
 
 /* ---- Ring buffer + pump geometry ------------------------------------- */
-/* Input chunk we process at a time: 64 ms of 48 kHz stereo PCM.
- * 64 ms matches the full TDM ping-pong buffer period inside drv_i2s.c
- * (PLAYBACK_DATA_FRAME_SIZE = 2048 int16 @ 32 kB/s stereo), so each
- * rt_device_write() to sound0 fills exactly one playback frame and the
- * downstream i2s_playback_task never works on partially-stale data. */
-#define SPK_STEREO_BYTES_PER_MS  (MIC_SAMPLE_RATE / 1000U * 2U * 2U) /* 192 */
-#define SPK_CHUNK_MS             64U
-#define SPK_CHUNK_STEREO_BYTES   (SPK_STEREO_BYTES_PER_MS * SPK_CHUNK_MS) /* 12288 */
-/* 3:1 decimation + stereo→mono: 3 stereo frames (12 B) → 1 mono sample (2 B). */
-#define SPK_CHUNK_MONO_SAMPLES   (SPK_CHUNK_STEREO_BYTES / 12U)           /* 1024 */
+/* Final playback path:
+ * - capture 48 kHz / 16-bit / stereo from USB
+ * - mix L/R into a mono source stream
+ * - let drv_i2s duplicate mono to L/R for the ES8388 output side
+ *
+ * RT-Thread audio core forwards sound0 in 2048-byte frames, i.e. 1024 mono
+ * int16 samples before drv_i2s expands them to stereo. Matching that block
+ * size keeps the downstream playback task aligned to whole frames. */
+#define SPK_OUT_SAMPLE_RATE      48000U
+#define SPK_CHUNK_STEREO_FRAMES  1024U
+#define SPK_CHUNK_STEREO_BYTES   (SPK_CHUNK_STEREO_FRAMES * 4U)           /* 4096 */
+#define SPK_CHUNK_MONO_SAMPLES   (SPK_CHUNK_STEREO_FRAMES)                /* 1024 */
 #define SPK_CHUNK_MONO_BYTES     (SPK_CHUNK_MONO_SAMPLES * 2U)            /* 2048 */
 
 /* Ring buffer must absorb a handful of 8 ms URB bursts while the pump
@@ -102,41 +104,13 @@ static volatile uint32_t s_pump_chunks;    /* chunks written to sound0 */
 static volatile uint32_t s_last_bytes;
 static volatile bool     s_running;
 
-/* ---- 3:1 downsample + stereo→mono accumulator ------------------------
- * State persists across chunk boundaries so the occasional 196-byte
- * (49 stereo frames) ISO packet does not break 3-sample alignment. */
-static int32_t s_ds_acc_l, s_ds_acc_r;
-static uint32_t s_ds_phase;
-
-static inline void ds_reset(void)
+static uint32_t mix_stereo_to_mono(const int16_t *stereo_in, uint32_t stereo_frames,
+                                   int16_t *mono_out, uint32_t mono_cap)
 {
-    s_ds_acc_l = 0;
-    s_ds_acc_r = 0;
-    s_ds_phase = 0;
-}
-
-/* Convert one 64 ms block of interleaved int16 stereo samples into mono
- * samples at 16 kHz by averaging each run of 3 stereo frames. Returns
- * the number of mono samples actually produced (~1024 in steady state,
- * may drift by ±1 when the USB device inserts a 49-sample ms). */
-static uint32_t ds_convert(const int16_t *stereo_in, uint32_t stereo_frames,
-                           int16_t *mono_out, uint32_t mono_cap)
-{
-    uint32_t out = 0;
-    for (uint32_t i = 0; i < stereo_frames; i++) {
-        s_ds_acc_l += stereo_in[2 * i];
-        s_ds_acc_r += stereo_in[2 * i + 1];
-        s_ds_phase++;
-        if (s_ds_phase == 3) {
-            if (out < mono_cap) {
-                /* Average 3 L samples + 3 R samples → (/6) = mono mix.
-                 * Max magnitude at int16 range stays inside int32. */
-                mono_out[out++] = (int16_t)((s_ds_acc_l + s_ds_acc_r) / 6);
-            }
-            s_ds_acc_l = 0;
-            s_ds_acc_r = 0;
-            s_ds_phase = 0;
-        }
+    uint32_t out = (stereo_frames < mono_cap) ? stereo_frames : mono_cap;
+    for (uint32_t i = 0; i < out; i++) {
+        mono_out[i] = (int16_t)(((int32_t)stereo_in[2 * i] +
+                                 (int32_t)stereo_in[2 * i + 1]) / 2);
     }
     return out;
 }
@@ -219,7 +193,7 @@ static void mic_urb_init(uint32_t idx, struct usbh_audio *audio_class, uint16_t 
 
 /* ---- Speaker pump: open sound0 and drive it from the ring buffer ----- */
 
-/* Scratch buffers for one 64 ms block. Placed in .bss (plain SRAM) —
+/* Scratch buffers for one playback block. Placed in .bss (plain SRAM) —
  * rt_device_write() will copy into sound0's own DMA-safe buffers. */
 static int16_t s_pump_stereo[SPK_CHUNK_STEREO_BYTES / 2];
 static int16_t s_pump_mono[SPK_CHUNK_MONO_SAMPLES];
@@ -251,18 +225,21 @@ static rt_err_t speaker_open_sound(void)
         return err;
     }
 
-    /* Sample rate is already 16 kHz / stereo by default inside drv_i2s;
-     * push the same values explicitly so future changes to the default
-     * won't silently break us. */
+    /* Push the playback format explicitly so future changes to drv_i2s
+     * defaults will not silently change this bridge path. */
     caps.main_type = AUDIO_TYPE_OUTPUT;
     caps.sub_type  = AUDIO_DSP_PARAM;
-    caps.udata.config.samplerate = 16000;
-    caps.udata.config.channels   = 2;
+    caps.udata.config.samplerate = SPK_OUT_SAMPLE_RATE;
+    /* We write mono samples into sound0; drv_i2s duplicates them to
+     * stereo, while the channel count here selects the correct source
+     * stream clocking/divider in ifx_set_samplerate(). */
+    caps.udata.config.channels   = 1;
     caps.udata.config.samplebits = 16;
     rt_device_control(s_sound_dev, AUDIO_CTL_CONFIGURE, &caps);
 
     s_sound_opened = true;
-    rt_kprintf(SPK_TAG "sound0 opened (16 kHz stereo, vol=%d)\r\n",
+    rt_kprintf(SPK_TAG "sound0 opened (%u Hz mono-source, vol=%d, stereo->mono mix)\r\n",
+               (unsigned)SPK_OUT_SAMPLE_RATE,
                SPK_DEFAULT_VOLUME);
     return RT_EOK;
 }
@@ -276,9 +253,9 @@ static void speaker_close_sound(void)
     s_sound_opened = false;
 }
 
-/* Drain one 64 ms chunk from the ring buffer into sound0. Returns true
- * when a chunk was actually written, false when the ring had less than
- * a full chunk ready. */
+/* Drain one playback chunk from the ring buffer into sound0. Returns true
+ * when a chunk was actually written, false when the ring had less than a
+ * full chunk ready. */
 static bool speaker_drain_one_chunk(void)
 {
     if (rt_ringbuffer_data_len(&s_ring) < SPK_CHUNK_STEREO_BYTES) {
@@ -302,7 +279,7 @@ static bool speaker_drain_one_chunk(void)
     }
 
     uint32_t stereo_frames = got / 4U; /* 4 B per stereo frame */
-    uint32_t mono_samples = ds_convert(
+    uint32_t mono_samples = mix_stereo_to_mono(
         s_pump_stereo, stereo_frames,
         s_pump_mono, SPK_CHUNK_MONO_SAMPLES);
 
@@ -342,7 +319,6 @@ static void mic_worker_entry(void *arg)
 
     /* Fresh ring buffer + counters for this attach session. */
     rt_ringbuffer_init(&s_ring, s_ring_pool, SPK_RING_BYTES);
-    ds_reset();
     s_total_bytes = 0;
     s_total_frames = 0;
     s_total_urbs = 0;
@@ -377,8 +353,8 @@ static void mic_worker_entry(void *arg)
     }
 
     /* Main loop: wake on IRQ-posted sem (one post per URB ≈ every 8 ms)
-     * or at worst every 20 ms, then drain as many 64 ms chunks as the
-     * ring buffer holds. */
+     * or at worst every 20 ms, then drain as many 1024-frame playback
+     * chunks as the ring buffer holds. */
     while (s_running) {
         rt_sem_take(s_pump_sem, rt_tick_from_millisecond(20));
         if (have_sink) {
@@ -538,10 +514,10 @@ static int speaker_stat(int argc, char **argv)
                (unsigned)rt_ringbuffer_data_len(&s_ring),
                (unsigned)rt_ringbuffer_space_len(&s_ring),
                s_ring_overruns, s_pump_underruns);
-    rt_kprintf(SPK_TAG "chunks_written=%u (each %u B mono = %u ms)\r\n",
+    rt_kprintf(SPK_TAG "chunks_written=%u (each %u B mono @ %u Hz)\r\n",
                s_pump_chunks,
                (unsigned)SPK_CHUNK_MONO_BYTES,
-               (unsigned)SPK_CHUNK_MS);
+               (unsigned)SPK_OUT_SAMPLE_RATE);
     return 0;
 }
 MSH_CMD_EXPORT(speaker_stat, print speaker pump + ring buffer stats);
