@@ -23,8 +23,13 @@
 #define MIC_SAMPLE_RATE        48000U
 #define MIC_BIT_RES            16U
 #define MIC_PACKET_SIZE        208U /* matches descriptor wMaxPacketSize */
-#define MIC_ISO_PACKETS_PER_URB 4U  /* 4 ms per urb */
-#define MIC_ISO_URB_COUNT      2U   /* double-buffer to keep stream flowing */
+#define MIC_ISO_PACKETS_PER_URB 8U  /* 8 ms per urb: enough headroom for the
+                                     * IRQ→callback→resubmit loop at 1 ms/frame. */
+#define MIC_ISO_URB_COUNT      1U   /* DWC2 host drives one channel per IN
+                                     * endpoint; keep a single urb in-flight
+                                     * and resubmit it from the completion
+                                     * callback. A second urb on the same ep
+                                     * would just sit idle while urb0 cycles. */
 
 #define MIC_URB_STORAGE_BYTES                                                   \
     (sizeof(struct usbh_urb) +                                                  \
@@ -53,6 +58,7 @@ static rt_thread_t s_worker;
  * on Cortex-M33. */
 static volatile uint32_t s_total_bytes;
 static volatile uint32_t s_total_frames;
+static volatile uint32_t s_total_urbs;
 static volatile uint32_t s_total_errors;
 static volatile uint32_t s_last_bytes;
 static volatile bool s_running;
@@ -65,15 +71,16 @@ static void mic_iso_complete(void *arg, int nbytes)
         return;
     }
 
-    if (nbytes >= 0) {
-        for (uint32_t i = 0; i < urb->num_of_iso_packets; i++) {
-            if (urb->iso_packet[i].errorcode == 0) {
-                s_total_bytes += urb->iso_packet[i].actual_length;
-                s_total_frames++;
-            } else {
-                s_total_errors++;
-            }
-        }
+    if (nbytes > 0) {
+        /* nbytes is urb->actual_length, already summed across all
+         * iso_packet[] in the dwc2 XFRC irq path. Using it here avoids any
+         * per-packet read race while the irq is still advancing frames. */
+        s_total_bytes += (uint32_t)nbytes;
+        s_total_frames += urb->num_of_iso_packets;
+        s_total_urbs++;
+    } else if (nbytes == 0) {
+        /* silent urb, unusual for ISO IN but count it as success */
+        s_total_urbs++;
     } else {
         /* whole urb aborted (e.g. NOTCONN on disconnect): stop the loop */
         s_total_errors++;
@@ -139,6 +146,7 @@ static void mic_worker_entry(void *arg)
 
     s_total_bytes = 0;
     s_total_frames = 0;
+    s_total_urbs = 0;
     s_total_errors = 0;
     s_last_bytes = 0;
     s_running = true;
@@ -210,11 +218,23 @@ static int mic_stat(int argc, char **argv)
     uint32_t cur = s_total_bytes;
     uint32_t delta = cur - s_last_bytes;
     s_last_bytes = cur;
-    rt_kprintf(MIC_TAG "frames=%u bytes_total=%u rate_since_last=%u B errors=%u\r\n",
-               s_total_frames, cur, delta, s_total_errors);
+    rt_kprintf(MIC_TAG "urbs=%u frames=%u bytes_total=%u delta=%u B errors=%u\r\n",
+               s_total_urbs, s_total_frames, cur, delta, s_total_errors);
     return 0;
 }
 MSH_CMD_EXPORT(mic_stat, print uac mic stream stats since last call);
+
+static void mic_dump_bytes(const char *tag, const uint8_t *p, uint32_t off, uint32_t n)
+{
+    rt_kprintf("  %s @ +%u:", tag, (unsigned)off);
+    for (uint32_t i = 0; i < n; i++) {
+        if ((i & 0xf) == 0) {
+            rt_kprintf("\r\n   ");
+        }
+        rt_kprintf("%02x ", p[off + i]);
+    }
+    rt_kprintf("\r\n");
+}
 
 static int mic_sample(int argc, char **argv)
 {
@@ -224,14 +244,29 @@ static int mic_sample(int argc, char **argv)
         rt_kprintf(MIC_TAG "no active mic stream\r\n");
         return 0;
     }
-    rt_kprintf(MIC_TAG "urb0 first 32 bytes:");
-    for (int i = 0; i < 32; i++) {
-        if ((i & 0xf) == 0) {
-            rt_kprintf("\r\n  ");
+
+    /* Per-packet actual_length tells us what the IRQ thinks each iso frame
+     * received. Combined with raw buffer content (head/tail) it lets us tell
+     * apart "IRQ count bug" (buffer has data past actual_length) vs "device
+     * really sent short packets" (buffer is zero past actual_length). */
+    for (uint32_t u = 0; u < MIC_ISO_URB_COUNT; u++) {
+        struct usbh_urb *urb = MIC_URB(u);
+        rt_kprintf(MIC_TAG "urb%u packet lengths:", u);
+        for (uint32_t p = 0; p < urb->num_of_iso_packets; p++) {
+            rt_kprintf(" [%u]=%u/err=%d",
+                       (unsigned)p,
+                       (unsigned)urb->iso_packet[p].actual_length,
+                       urb->iso_packet[p].errorcode);
         }
-        rt_kprintf("%02x ", s_iso_buf[0][i]);
+        rt_kprintf("\r\n");
     }
-    rt_kprintf("\r\n");
+
+    /* Dump head, the boundary around 96-byte mark, and the tail of urb0 pkt0
+     * so we can see whether bytes 96..208 are valid PCM or zero/stale. */
+    rt_kprintf(MIC_TAG "urb0 pkt0 buffer (first 16, around 96, last 16):\r\n");
+    mic_dump_bytes("head", s_iso_buf[0], 0, 16);
+    mic_dump_bytes("mid ", s_iso_buf[0], 88, 32);
+    mic_dump_bytes("tail", s_iso_buf[0], MIC_PACKET_SIZE - 16, 16);
     return 0;
 }
-MSH_CMD_EXPORT(mic_sample, hexdump first 32 bytes of mic urb0 buffer);
+MSH_CMD_EXPORT(mic_sample, dump iso packet lengths and buffer windows);
