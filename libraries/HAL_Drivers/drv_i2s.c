@@ -577,7 +577,13 @@ void i2s_playback_task(void *arg)
     struct sound_device *snd_dev;
     RT_ASSERT(audio != RT_NULL);
     snd_dev = (struct sound_device *)audio->parent.user_data;
-#if defined(PKG_USING_WAVPLAYER) && !defined(BSP_USING_XiaoZhi)
+#if !defined(BSP_USING_XiaoZhi)
+    /* Timeout counter used to escape the empty-queue busy-wait below and
+     * unblock _aduio_replay_stop() which waits on audio->replay->cmp when the
+     * upper layer closes the sound device with no more data to play. Required
+     * whenever the PKG_USING_WAVPLAYER path is not used (e.g. usbh_uac_mic /
+     * wav_play_test in Edgi_Talk_M33_USB_H) so rt_device_close(sound0) does
+     * not block the application worker forever. */
     static int count = 0;
 #endif
     int16_t *temp_buffer_ptr;
@@ -767,7 +773,16 @@ void i2s_playback_task(void *arg)
         while (audio->replay->queue.is_empty == 1)
         {
             rt_thread_mdelay(1);
-#if defined(PKG_USING_WAVPLAYER) && !defined(BSP_USING_XiaoZhi)
+#if !defined(BSP_USING_XiaoZhi)
+            /* When rt_device_close(sound0) runs, the audio core sets
+             * REPLAY_EVT_STOP and then blocks inside rt_completion_wait()
+             * until _audio_send_replay_frame() acks the stop via
+             * rt_completion_done(). _audio_send_replay_frame() only runs from
+             * rt_audio_tx_complete() after this busy-wait, so if the upper
+             * layer stops feeding frames we would deadlock here forever.
+             * Kick the completion every ~50 ms so close() can always return;
+             * extra rt_completion_done() calls while no one is waiting are a
+             * no-op. */
             if(count>=50){
                 rt_completion_done(&audio->replay->cmp);
                 count=0;
