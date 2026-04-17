@@ -10,173 +10,191 @@
 ## 1. 最终需求
 
 **实时播放 USB 麦克风的音频（当扩音器用）**：
+
+```
 USB MIC (UAC 1.0 ISO IN, 48 kHz / 16-bit / stereo)
-→ CherryUSB Host (DWC2, ISO IN) ← **已打通**
-→ 应用层缓冲 ← **待实现**
-→ RT-Thread audio framework (`sound0`) ← **待启用**
-→ I2S TDM0 + ES8388 DAC ← **驱动已存在，需引入**
-→ 板载功放 → 喇叭
+  -> CherryUSB Host (DWC2, ISO IN)                -- [DONE]
+  -> mic_iso_complete IRQ -> rt_ringbuffer (32KB) -- [DONE]
+  -> mic_uac worker thread (pull 64ms chunks)     -- [DONE]
+  -> 3:1 decimation + stereo->mono mix (48k->16k) -- [DONE]
+  -> rt_device_write(sound0)                      -- [DONE]
+  -> drv_i2s (TDM0 TX) + ES8388 DAC               -- [DONE]
+  -> 板载功放 -> 喇叭                              -- [DONE]
+```
 
-参考实现：`projects/Edgi_Talk_M33_Audio/applications/main.c`（它跑的是板载 PDM `mic0` → `sound0` 回环，不是 USB 麦克风）。
+当前状态：**插入麦克风后，喇叭自动扩音；拔出即停。编译通过，固件已生成 `build/rtthread.hex`。**
 
 ---
 
-## 2. 当前已完成的里程碑（上一阶段）
+## 2. 整体架构（收敛版）
 
-**USB 采集链路已稳定跑通**，`mic_stat` 输出已经显示期望速率：
+### 2.1 单线程模型
+
+本阶段从最初的"双线程（mic_worker + pump_thread）"方案合并成**单线程**：
 
 ```
-[mic] urbs=3142 frames=25136 bytes_total=4825440 delta=192000 B errors=0
+attach: usbh_audio_run()
+  -> 懒创建 s_pump_sem
+  -> 创建 "mic_uac" 线程 (prio 15, stack 4KB)
+
+mic_uac 线程:
+  rt_ringbuffer_init(s_ring_pool, 32KB)
+  ds_reset()
+  speaker_open_sound()    -- 打开 sound0, 16kHz stereo, vol=60
+  s_running = true
+  submit all ISO URBs
+  loop:
+    rt_sem_take(s_pump_sem, 20ms)
+    while (s_running && speaker_drain_one_chunk())
+      { /* 每次 drain 64ms */ }
+  speaker_close_sound()
+
+DWC2 IRQ: mic_iso_complete()
+  for each iso_packet:
+    rt_ringbuffer_put_force(s_ring, pkt, actual_length)
+  rt_sem_release(s_pump_sem)
+  usbh_submit_urb(urb)    -- 立即复投
+
+detach: usbh_audio_stop()
+  s_running = false
+  usbh_kill_urb(每个 URB)
+  rt_sem_release(s_pump_sem)  -- 唤醒 worker 让它优雅退出
 ```
 
-`delta = 192000 B/s = 48000 samples × 2 ch × 2 B` 完全符合 UAC 1.0 标称值，`errors=0`。
+为什么不分两个线程：`speaker_pump` 和 `mic_worker` 共享 `s_ring`/`s_pump_sem`，分开后拔插瞬间的生命周期竞态非常难处理（pump 还没退出 worker 就重建了 s_ring，或者反过来）。合一之后"worker 在 = 流在 = sound0 开"是一对一关系，代码和状态都简单。
 
-### 2.1 关键代码改动（已在 master 上）
+### 2.2 缓冲/速率几何
 
-| 提交 | 文件 | 作用 |
+| 维度 | 值 | 依据 |
 |---|---|---|
-| `46973c9c feat: support uac macrophone` | `libraries/components/CherryUSB-1.6.0/port/dwc2/usb_hc_dwc2.c` | 给 DWC2 Host 补齐 ISO IN：实现 `dwc2_iso_urb_init` + `dwc2_iso_advance_or_finish` + 在 IRQ handler 里按 ISO 规则推进/错误吞咽 |
-| `46973c9c` | `libraries/components/CherryUSB-1.6.0/class/audio/usbh_audio.c` | 兼容无 IAD 设备：`cur_iface_count=0xff` 时按 `bNumInterfaces - ctrl_intf` 回退 |
-| `46973c9c` | `projects/.../rtconfig.h` + `.config` | 开启 `RT_CHERRYUSB_HOST_AUDIO` |
-| `46973c9c` | `projects/.../applications/usbh_uac_mic.c` | 新建；实现 `usbh_audio_run/stop` 弱符号 + `mic_stat/mic_sample` msh 命令 |
-| `4f9102bf fix(uac-mic): ...` | `usbh_uac_mic.c` | 单 URB（8 packet × 208 B）+ 回调直接用 `urb->actual_length` 累加 |
-| `950eaf20 docs(uac-mic): ...` | `.cursor/docs/usb-host-uac-mic-notes.md` | 详细开发笔记（**务必先读！**） |
+| USB 流速 | 192 kB/s | 48 kHz × 2 ch × 2 B |
+| 单个 iso_packet | 192 B (偶发 196 B) | 48 或 49 samples |
+| URB 周期 | 8 ms | 8 packets/urb, 1 URB in flight |
+| 环形缓冲 | 32 KB | ≈170 ms headroom，溢出走 `put_force` 丢最旧 |
+| 加工块 | 64 ms | 12288 B stereo in -> 2048 B mono out |
+| 64 ms 对应 `sound0` | **正好一个 `PLAYBACK_DATA_FRAME_SIZE`** | 2048 `int16_t` @ 16 kHz stereo |
+| ds 算法 | 每 3 个 stereo frame 求 (L+R)/6 -> 1 mono sample | 3:1 decimation + 声道混合 |
 
-### 2.2 当前 `usbh_uac_mic.c` 关键状态
+一次 drain 正好对齐 `drv_i2s` 内部的 ping-pong 一侧，下游 `i2s_playback_task` 拿到整块不会出现半旧半新数据。
 
-- 数据缓冲：`s_iso_buf[1][8 * 208]`，放在 `USB_NOCACHE_RAM_SECTION`（`.cy_socmem_data`），DMA 安全。
-- URB 回调 `mic_iso_complete()` 在 **DWC2 IRQ 上下文**执行，目前只做统计 + 立即 `usbh_submit_urb()` 重投递，**没有把 PCM 向外传递**。
-- 每个 iso_packet 的 `actual_length` 实测稳定 =192 B（注意：`wMaxPacketSize=208` 是协议预留，实际音频载荷是 `48 samples × 2 ch × 2 B = 192 B`；尾部 16 B 是 0 填充/无效）。
-- 配套命令：`mic_stat`（统计）、`mic_sample`（dump iso_packet 长度 + buffer 头/中/尾字节），用于诊断。
+### 2.3 关键文件
 
----
-
-## 3. 下一阶段要做的事：接播放通路
-
-### 3.1 参考 demo 的播放链路（`Edgi_Talk_M33_Audio`）
-
-```
-rt_device_write(sound0, buf, n)
-  → drv_i2s.c :: sound_transmit()              -- writeBuf 被包装成 i2s_playback_q_data 发 mq
-  → i2s_playback_task()                        -- 线程从 mq 取出
-  → convert_mono_to_stereo() [mono → L=R]      -- 注意: demo 默认输入是 mono
-  → TDM0 TX + ES8388 DAC
-```
-
-注册入口：`libraries/HAL_Drivers/drv_i2s.c` → `rt_hw_sound_init()` → `rt_audio_register(&snd_dev.audio, "sound0", RT_DEVICE_FLAG_WRONLY, ...)`（`INIT_DEVICE_EXPORT`）。
-
-ES8388 上电 + I2S init 发生在 `sound_init()`（`rt_device_open(sound0, WRONLY)` 触发），调用 `es8388_init("i2c0", ...)` + `es8388_start(ES_MODE_DAC)` + `es8388_volume_set(80)` + `ifx_set_samplerate(...)`。
-
-### 3.2 引入播放的步骤（建议实现顺序）
-
-#### Step A — 编译并启用 `sound0`
-
-1. 在 `projects/.../Kconfig` 或 menuconfig 里打开：
-   - `CONFIG_RT_USING_AUDIO=y`（RT-Thread audio framework）
-   - `CONFIG_BSP_USING_AUDIO=y`
-   - `CONFIG_BSP_USING_AUDIO_PLAY=y`（`BSP_USING_AUDIO_RECORD` 不需要，咱们不复用板载 PDM）
-   - 对应 `RT_USING_I2C` + `BSP_USING_HW_I2C0`（ES8388 通过 i2c0 控制）
-2. 确认 `libraries/HAL_Drivers/SConscript` 会把 `drv_i2s.c` / `drv_pdm.c` 编入（`drv_pdm.c` 无法剥离，只编 drv_i2s 需改 SConscript；先可带着 pdm）。
-3. 确认 `libraries/Common/board/SConscript` 在 `BSP_USING_AUDIO_PLAY` 下把 `ports/audio/drv_es8388.c` 编入。
-4. **硬件电源**：从 `projects/Edgi_Talk_M33_Audio/board/board.c` 复制 `en_gpio()`（`INIT_BOARD_EXPORT`）到 `projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H/board/board.c`，打开 `ES8388_CTRL (P16.2)` / `SPEAKER_OE_CTRL (P21.6)`。不做这一步声音链路是不通电的。
-
-#### Step B — 解决采样率 / 声道不匹配
-
-`libraries/HAL_Drivers/drv_i2s.h` 里 `SAMPLING_RATE` 是**编译时宏**，默认 16 kHz：
-
-```c
-#define SAMPLING_RATE  (SAMPLING_RATE_16kHz)   // 16000
-```
-
-UAC MIC 送来的是 48 kHz stereo，有两条路：
-
-- **方案 A（推荐，改动最小）**：把 `SAMPLING_RATE` 改成 `SAMPLING_RATE_48kHz`，让 I2S/ES8388 直接跑 48 k。`FRAME_SIZE` 自动变成 480，`PLAYBACK_DATA_FRAME_SIZE=960 int16_t`。
-  - 风险：AEC 参考链（`AEC_REF_SAMPLING_RATE=16 k`）会走 down-sampling 分支，里面有 `init_IFX_asrc(&asrc_mem_down_sampling, 48000, 16000)`，不会出错但占 CPU；本需求不用 AEC，可以在 `i2s_playback_task` 里用宏关掉 AEC 分支，或者先不管。
-- **方案 B（更通用）**：保留 16 k，在应用层对 USB 进来的 48 k stereo PCM 做 down-sample。可以直接复用 demo 里的 `IFX_asrc`（下采样 48k→16k + stereo→mono 混）。麻烦点：需要在 USB_H 工程里把 `IFX_asrc`（位于 `libraries/.../IFX_asrc.*`）编进来。
-
-**声道**：`drv_i2s.c :: i2s_playback_task` 调用 `convert_mono_to_stereo((int16_t*)q.data, q.data_len, ...)`，也就是说**当前 sound0 接口是 mono**。麦克风过来是 stereo (L R L R ...)，有两条路：
-- 下采样时顺便做 `L = (L+R)/2` 得到 mono，然后走 demo 现成的 mono→stereo 路径；
-- 或 patch `drv_i2s.c` 让 `sound_transmit` 支持 stereo 直通（看 `audio_config.channels`，=2 时跳过 `convert_mono_to_stereo` 直接 `memcpy`）。
-
-#### Step C — 把 USB 数据送到 `sound0`
-
-**不要**在 `mic_iso_complete` 里直接 `rt_device_write(sound0, ...)`，那是 IRQ 上下文，`rt_device_write` 最终会走 `rt_mq_send` 通常可以但整条链里的 `rt_data_queue_push` 可能阻塞。推荐结构：
-
-```
-USB IRQ (dwc2) -> mic_iso_complete:
-    memcpy(ringbuf, iso_packet.transfer_buffer, 192)
-    rt_sem_release(pcm_ready_sem)
-    usbh_submit_urb(urb)          // 重投递保持 ISO 不断流
-
-pcm_pump_thread (新增, 优先级比 worker 略高):
-    while (s_running) {
-        rt_sem_take(pcm_ready_sem, TIMEOUT);
-        while (ringbuf 至少有 sound0 一帧 (FRAME_SIZE*2*2 字节)):
-            pull_one_frame(buf)
-            [可选: 下采样 / stereo→mono]
-            rt_device_write(sound0, 0, buf, len);
-    }
-```
-
-选型提示：
-- Ring buffer 用 `struct rt_ringbuffer` 即可（`rt_ringbuffer_create(N*KB, ...)`），容量建议 ≥ 40 ms PCM（= 48000 * 2 * 2 * 0.04 ≈ 7.7 KB）。
-- 每 1 ms 一个 iso_packet 共 192 B；sound0 一帧在 48k 配置下需要 `FRAME_SIZE=480 sample × 2 ch × 2 B = 1920 B`，**正好 10 个 iso_packet**。可以积 10 个 packet 再下发，也可以直接每个 packet 都 push ringbuf。
-- `sound_transmit` 返回 `size`，说明它立刻接收；但实际消耗速度受 I2S 中断节拍决定。如果消费慢于生产，ring buffer 会满 → 要么丢最旧数据、要么阻塞上游；首版建议**丢最旧**（扩音器场景宁可短时 glitch 不要累积延迟）。
-
-#### Step D — 连通性验证
-
-- 开机 → 插麦克风 → `ls device` 看到 `mic_uac` 线程；`rt_device_find("sound0")` 成功。
-- 新增一个 msh 命令 `speaker_start` / `speaker_stop` 控制 pump 线程启停，便于和 `mic_stat` 一起 debug。
-- 正确性指标：
-  - 无杂音 / 无断流（`mic_stat` 仍然稳定 `delta=192000 B`、`errors=0`）；
-  - ring buffer 使用率在中位数（打印 high-water mark）；
-  - 延迟主观 < 200 ms（麦克风离嘴 20 cm 比对喇叭输出）。
-
----
-
-## 4. 已知的坑 / 注意事项
-
-1. **无 IAD 的 UAC 设备**：已在 `usbh_audio.c` 打过兼容补丁；换不同麦克风时留意是否引入新的 descriptor 变体。参见 `.cursor/docs/usb-host-uac-mic-notes.md` §3.2。
-2. **DWC2 一端点一 Channel**：ISO IN 同一 endpoint 只能有一条活跃 URB。**不要在应用层同时 submit 多个 URB 给同一个 endpoint**，DWC2 会只跑第一个，其余统计值会是 0（曾经踩过：原本双 URB 结果 delta 只有一半）。同一个 URB 内的多 packet 没问题。
-3. **IRQ 回调里 `usbh_submit_urb` 是安全的**（只用 critical section + 寄存器写），但别在回调里 `rt_mq_send` 到没有等待线程的 mq；要么用 `rt_sem_release` + 专门的消费线程，要么用 `rt_ringbuffer_put`。
-4. **Cache / DMA 一致性**：所有给 DWC2 用的 buffer 必须放在 `.cy_socmem_data`（`USB_NOCACHE_RAM_SECTION` 宏）。给 ES8388/TDM 用的 `i2s_stereo_playback_buffer*` 也是同样的 section，复制过去没问题。ring buffer 可以在 SRAM（CPU 只读写），只在发送前把数据 `memcpy` 进 `.cy_socmem_data` 的 I2S buffer。
-5. **ES8388 I2C**：绑定在 `i2c0`（见 `sound_init`）；USB_H 项目里目前没开启 I2C0，需要同步打开。`I2C_ADDRESS=0x18`，`I2C_FREQUENCY=400 kHz`。
-6. **电源/PA 时序**：`es8388_pa_power(true)` 在 `es8388_start(ES_MODE_DAC)` 里会调用。开机顺序建议：先 `en_gpio()` 拉高 3V3 + SPEAKER_OE + ES8388_CTRL → USB 初始化 → 枚举 → `rt_device_open(sound0)` 触发 I2S+codec 初始化 → pump 线程启动。
-7. **采样率切换时机**：不要在 `sound0` 已经在跑的时候改 `audio_config.samplerate`；demo 里是在 `main` 一次性 `AUDIO_CTL_CONFIGURE` 后 `rt_device_open`。
-8. **Build**：必须确保 `.config` 和 `rtconfig.h` 一致。`.config` 由 `scons --menuconfig` 生成 `rtconfig.h`；可以手工同步但容易漏改（上一阶段 `RT_CHERRYUSB_HOST_AUDIO` 就是两边都手动加的）。
-9. **烧录脚本**：`projects/.../Edgi_Talk_M33_USB_H/run.sh`（git untracked）是用于 Linux 下 build + flash 的辅助脚本，可以直接用。
-
----
-
-## 5. 关键文件速查
-
-| 路径 | 说明 |
+| 路径 | 作用 |
 |---|---|
-| `projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H/applications/main.c` | USB Host 入口，`usbh_initialize(0, ...)` |
-| `projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H/applications/usbh_uac_mic.c` | **本阶段要扩展的核心文件**（目前只做统计，下一步接 ring buffer + pump） |
-| `projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H/board/board.c` | 需要追加 `en_gpio()` + ES8388/SPEAKER 上电 |
-| `projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H/rtconfig.h` / `.config` | 打开 `RT_USING_AUDIO` / `BSP_USING_AUDIO_PLAY` / `RT_USING_I2C` |
-| `projects/Edgi_Talk_M33_Audio/applications/main.c` | 参考：`sound0`/`mic0` 回环 |
-| `projects/Edgi_Talk_M33_Audio/board/board.c` | 参考：`en_gpio()` 电源控制 |
-| `libraries/HAL_Drivers/drv_i2s.c` | `sound0` 注册 + I2S TDM0 TX + `i2s_playback_task`（若要 stereo 直通/改采样率需在此 patch） |
-| `libraries/HAL_Drivers/drv_i2s.h` | `SAMPLING_RATE` 宏、`FRAME_SIZE`、`PLAYBACK_DATA_FRAME_SIZE` |
-| `libraries/HAL_Drivers/drv_pdm.c` | 板载 PDM `mic0`（本需求不用，但 SConscript 会一起编） |
-| `libraries/Common/board/ports/audio/drv_es8388.{c,h}` | ES8388 I2C 驱动，`es8388_init/start/volume_set/pa_power` |
-| `libraries/components/CherryUSB-1.6.0/port/dwc2/usb_hc_dwc2.c` | DWC2 Host（ISO 补丁在这） |
-| `libraries/components/CherryUSB-1.6.0/class/audio/usbh_audio.c` | UAC class driver（无 IAD 补丁在这） |
-| `libraries/components/CherryUSB-1.6.0/common/usb_hc.h` | `usbh_urb` / `usbh_iso_frame_packet` 结构 |
-| `.cursor/docs/usb-host-uac-mic-notes.md` | **上一阶段详细笔记，必读** |
-| `.cursor/docs/psoc-e84-edgi-talk-guide.md` | SDK/板子整体概览 |
-| `tmp/audio-descriptor` | 目标麦克风 `lsusb -v` 原始输出 |
+| `projects/.../applications/usbh_uac_mic.c` | **核心文件**：IRQ 收集 + ring buffer + worker + decimation + sound0 驱动（~540 行，有完整头注释） |
+| `projects/.../board/board.c` | `en_gpio()` 把 `ES8388_CTRL (P16.2)` / `SPEAKER_OE_CTRL (P21.6)` 拉高 |
+| `projects/.../rtconfig.h` + `.config` | 打开 `RT_USING_AUDIO` / `BSP_USING_AUDIO_PLAY` / `RT_USING_I2C` / `BSP_USING_HW_I2C0` / `RT_AUDIO_REPLAY_MP_*` |
+| `libraries/HAL_Drivers/drv_i2s.c` | `sound0` 注册，16 kHz stereo，内部 `convert_mono_to_stereo` + TDM0 TX DMA |
+| `libraries/Common/board/ports/audio/drv_es8388.c` | ES8388 I2C 控制（`es8388_init/start/volume_set/pa_power`） |
+| `libraries/components/CherryUSB-1.6.0/port/dwc2/usb_hc_dwc2.c` | ISO IN Host 补丁 |
+| `libraries/components/CherryUSB-1.6.0/class/audio/usbh_audio.c` | UAC class driver（无 IAD 兼容补丁） |
+| `.cursor/docs/usb-host-uac-mic-notes.md` | 上一阶段 USB 侧开发笔记（建议回顾） |
 
 ---
 
-## 6. 交接对话索引
+## 3. 已完成的里程碑
 
-- [UAC 麦克风 Host 支持实现](944a3730-e7c5-4dcc-a5f7-34d99cb9163a)：上一阶段全部讨论与实现（从需求澄清 → DWC2/UAC 补丁 → 192 kB/s 验证 → 文档 + commit）。
+### 3.1 阶段一：USB 采集（已在 master）
+
+- `46973c9c feat: support uac macrophone`：DWC2 ISO IN 补齐 + UAC 无 IAD 兼容 + 初版 `usbh_uac_mic.c`
+- `4f9102bf fix(uac-mic)`：单 URB × 8 packet 拓扑
+- `950eaf20 docs(uac-mic)`：USB 笔记
+
+实测：`[mic] urbs=3142 frames=25136 bytes_total=4825440 delta=192000 B errors=0`，速率准确且长期稳定。
+
+### 3.2 阶段二：接播放通路（本阶段 = 本次交付）
+
+本阶段改动：
+
+1. **Kconfig**：`rtconfig.h` + `.config` 打开
+   - `RT_USING_AUDIO` / `RT_AUDIO_REPLAY_MP_BLOCK_SIZE=4096` / `RT_AUDIO_REPLAY_MP_BLOCK_COUNT=2` / `RT_AUDIO_RECORD_PIPE_SIZE=2048`
+   - `RT_USING_I2C` + `RT_USING_I2C_BITOPS`（被 `drv_i2c.c` 间接需要）
+   - `BSP_USING_AUDIO` + `BSP_USING_AUDIO_PLAY` + `ENABLE_STEREO_INPUT_FEED`
+   - `BSP_USING_I2C` + `BSP_USING_HW_I2C0`
+2. **`board/board.c`**：从 `Edgi_Talk_M33_Audio` 引入 `en_gpio()`（`INIT_BOARD_EXPORT`），上电早期拉高功放+codec 使能。
+3. **`applications/usbh_uac_mic.c`** 完整重写了运行逻辑：
+   - 加 `rt_ringbuffer` + 32KB 池 (`.bss`)。
+   - `mic_iso_complete` 改为按 `iso_packet[].actual_length` 逐包 `put_force`，释放 `s_pump_sem`。
+   - 新增 `ds_convert`：3:1 decimation + (L+R)/6 混合，状态跨 chunk 持久化，容忍 49 sample 插入。
+   - 新增 `speaker_open_sound/close_sound`：`AUDIO_MIXER_VOLUME` 设 60 + `AUDIO_CTL_CONFIGURE` 设 16 k stereo 16 bit。
+   - 新增 `speaker_drain_one_chunk`：消费侧在 `rt_hw_interrupt_disable` 保护下从 ring 取 12288 B，转换后 `rt_device_write(sound0, 2048 B mono)`。
+   - `mic_worker_entry`：单线程完整生命周期（ringbuf init → sound0 open → URB submit → 循环 drain → 退出时关 sound0）。
+   - `usbh_audio_run/stop`：懒创建 sem；stop 时 kill URBs + release sem 让 worker 立即返回。
+4. **MSH 命令**：
+   - `mic_stat`：USB 采集统计（增量速率）
+   - `mic_sample`：dump ISO packet 长度 + buffer 十六进制
+   - `speaker_vol <0..100>`：运行时调音量
+   - `speaker_stat`：ring/pump/sound0 状态 + 已写 chunk 数
+
+### 3.3 构建/烧录验证
+
+- `./run.sh build` 通过，`text=203128 data=17408 bss=242249`。
+- `scons` 只剩两条无关 warning（`usbh_dfs.c` 的 `CONFIG_USB_DFS_MOUNT_POINT` 格式与 `drv_i2s.c` 的 `unused count`），不影响功能。
+- `build/rtthread.hex` 已由 `edgeprotecttools` 重定位到外部 QSPI 区段，可直接 `./run.sh flash`。
 
 ---
 
-## 7. 一句话总结
+## 4. 运行方式
 
-**USB 端 PCM 已稳定流入 `s_iso_buf`，下一步在 `mic_iso_complete` 与 `sound0` 之间搭一根 ring-buffer + pump thread，并把 `drv_i2s` 切到 48 kHz stereo，就能实时扩音。**
+```bash
+cd projects/Edgi_Talk_CherryUSB/Edgi_Talk_M33_USB_H
+./run.sh build      # 编译
+./run.sh flash      # KitProg3 烧录
+# 串口 (UART2) 115200 8N1
+```
+
+上电后：
+
+1. `en_gpio` 先拉高 `ES8388_CTRL` / `SPEAKER_OE_CTRL`。
+2. `main` 调用 `usbh_initialize(0, ...)`。
+3. 插麦克风 -> 枚举 -> `usbh_audio_run` -> `mic_uac` 线程起来 -> `[mic] stream open: mps=208, urbs=1, frames/urb=8` -> `[spk] sound0 opened (16 kHz stereo, vol=60)`。
+4. 正常情况：数据流直接从麦克风到喇叭，延迟 ≈ 64 ms（一个 chunk）+ `drv_i2s` ping-pong 抖动。
+5. 拔麦克风 -> `usbh_audio_stop` -> worker 退出 -> sound0 关闭。
+
+运行时排查命令：
+
+| 命令 | 用途 |
+|---|---|
+| `mic_stat` | 看 USB 侧是否还在跑（`delta` 应 = 192000 B） |
+| `mic_sample` | 看 iso_packet 长度 / 前 16 B hex，确认不是 0 |
+| `speaker_stat` | 看 ring 水位、overruns/underruns、已写 chunk 数 |
+| `speaker_vol 80` | 实时调音量 |
+| `ps` / `list_thread` | 看 `mic_uac` 是否在跑 |
+
+---
+
+## 5. 已知的坑 / 设计取舍
+
+1. **单 URB + 1 端点 1 channel**：DWC2 同一 ISO IN 端点只能一条活跃 URB；不要尝试双 URB 流水（上一阶段已踩过，速率会减半）。
+2. **drop-oldest vs block**：ring 用 `rt_ringbuffer_put_force`，溢出时覆盖最旧数据。扩音器场景下宁可短 glitch 不要累积延迟；若将来要做录音存档，要改成 `rt_ringbuffer_put` + 计数丢包。
+3. **`rt_hw_interrupt_disable` 保护消费侧**：因为生产侧在 IRQ 里跑 `put_force`，两者对 `read_index/write_index` 有并发写，这里简单用全局中断锁锁住一次 12KB 的 `memcpy`（≈几微秒），远小于 1 ms USB frame，不会丢包。
+4. **mic0 / drv_pdm.c 会被一起编**：`HAL_Drivers/SConscript` 只看 `BSP_USING_AUDIO`，会把 `drv_pdm.c` 一起进来，但它只做 `INIT_DEVICE_EXPORT` 注册，不 `open` 就不会碰 PDM 硬件，不冲突，不必单独屏蔽。
+5. **采样率：为什么是 16 k 不是 48 k**：`drv_i2s.h :: SAMPLING_RATE = 16 kHz` 是**编译时常量**，改成 48 k 会连带影响 AEC 参考链的代码路径。扩音器不需要保真度，在应用层 3:1 下采样 + 立体声混单声道最省事，且 64 ms chunk 正好对齐 `sound0` 的 ping-pong 帧（2048 int16）。
+6. **ES8388 I2C 地址**：`0x18 @ 400 kHz`（`sound_init` 内硬编码），必须 `BSP_USING_HW_I2C0=y`。
+7. **Cache / DMA**：`s_iso_buf` 在 `USB_NOCACHE_RAM_SECTION` (`.cy_socmem_data`)，是 DWC2 的 DMA 目的地。`s_pump_stereo/s_pump_mono` 是普通 SRAM，供 CPU 内存拷贝 + decimation 用，最后 `rt_device_write` 会把数据复制到 `drv_i2s` 自己管理的 DMA 缓冲。
+8. **Kconfig 与 `.config` 手工同步**：这个 BSP 没开 `menuconfig` 的完整闭环，`rtconfig.h` 是手 维 护 的 ；每次改 Kconfig 都要**双写 `rtconfig.h` + `.config`**，否则下次 `menuconfig` 会把手工的改动覆盖。
+9. **开机电源顺序**：`en_gpio` 在 `INIT_BOARD_EXPORT` 阶段运行，早于 `rt_device_open("sound0")`，所以 `es8388_init` 执行时电源已经稳定；若将来改动启动顺序要留意这条依赖。
+10. **USB 热插拔**：`usbh_audio_stop` 里用 `rt_sem_release` 唤醒 worker 让它立刻退出；`s_running=false` 在 `mic_iso_complete` 里也会在 `-USB_ERR_NOTCONN/-SHUTDOWN` 时设为 false，双路径兜底。
+
+---
+
+## 6. 后续可能的优化方向（非本期需求）
+
+- **AEC 反馈路径**：如果要把本地喇叭的回声从 MIC 去掉，可以把 `rt_device_write` 给 sound0 的 mono buffer 复制一份作为 AEC reference。
+- **USB Feedback endpoint**：目前忽略了 UAC 里 implicit/explicit 反馈端点，48 kHz → 16 kHz 降采样用整数 3:1，偶发 49-sample 插入用 `ds_phase` 跨 chunk 吸收。若换 48 kHz 非整数倍的 codec 需要真正的 ASRC（可接 `IFX_asrc`）。
+- **延迟下调**：把 chunk 从 64 ms 降到 16 ms 或 32 ms，需要同时修改 `drv_i2s` 的 `PLAYBACK_DATA_FRAME_SIZE`，并增加 ring 水位监控。
+- **立体声直通**：若换上 48 k stereo 的 codec 链路，改 `drv_i2s` 让 `sound_transmit` 在 `channels==2` 时跳过 `convert_mono_to_stereo`，直接 `memcpy`。
+- **音量控制 UI**：目前只有 MSH `speaker_vol`；可以接入旋钮/按键。
+
+---
+
+## 7. 交接对话索引
+
+- [UAC 麦克风 Host 支持实现](944a3730-e7c5-4dcc-a5f7-34d99cb9163a)：阶段一（DWC2/UAC 补丁 + 192 kB/s 验证）。
+- [UAC 麦克风实时扩音](f3a7796e-0070-465f-92d2-9e0dca869728)：阶段二（本次，把 USB 流送到 sound0）。
+
+---
+
+## 8. 一句话总结
+
+**插入 UAC 麦克风即扩音。数据路径：DWC2 IRQ -> `rt_ringbuffer` (32 KB, drop-oldest) -> `mic_uac` 工作线程 (64 ms chunk) -> 3:1 decimate + L/R mono mix -> `rt_device_write(sound0)` -> ES8388 -> 功放 -> 喇叭。单线程模型，拔插自动 open/close sound0，MSH 可实时调音量/看水位。**

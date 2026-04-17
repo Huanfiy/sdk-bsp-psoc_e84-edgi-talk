@@ -114,7 +114,13 @@
 #define RT_USING_SERIAL
 #define RT_USING_SERIAL_V1
 #define RT_SERIAL_RB_BUFSZ 128
+#define RT_USING_I2C
+#define RT_USING_I2C_BITOPS
 #define RT_USING_PIN
+#define RT_USING_AUDIO
+#define RT_AUDIO_REPLAY_MP_BLOCK_SIZE 4096
+#define RT_AUDIO_REPLAY_MP_BLOCK_COUNT 2
+#define RT_AUDIO_RECORD_PIPE_SIZE 2048
 
 /* Using USB */
 
@@ -359,11 +365,16 @@
 /* Onboard Peripheral Drivers */
 
 #define BSP_USING_USB_TO_UART
+#define BSP_USING_AUDIO
+#define BSP_USING_AUDIO_PLAY
+#define ENABLE_STEREO_INPUT_FEED
 /* end of Onboard Peripheral Drivers */
 
 /* On-chip Peripheral Drivers */
 
 #define BSP_USING_GPIO
+#define BSP_USING_I2C
+#define BSP_USING_HW_I2C0
 #define BSP_USING_UART
 #define BSP_USING_UART2
 #define BSP_USING_UART5
