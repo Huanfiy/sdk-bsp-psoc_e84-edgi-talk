@@ -14,8 +14,12 @@
 #define WAV_SOUND_DEV_NAME    "sound0"
 #define WAV_THREAD_STACK      4096
 #define WAV_THREAD_PRIO       18
+#define WAV_AUTO_THREAD_STACK 2048
+#define WAV_AUTO_THREAD_PRIO  24
 #define WAV_IO_BYTES          4096
 #define WAV_PATH_MAX          256
+#define WAV_AUTO_PATH         "/test.wav"
+#define WAV_AUTO_POLL_MS      500
 
 struct wav_info
 {
@@ -27,6 +31,7 @@ struct wav_info
 };
 
 static rt_thread_t s_wav_thread;
+static rt_thread_t s_wav_auto_thread;
 static volatile rt_bool_t s_wav_stop_req;
 static char s_wav_path[WAV_PATH_MAX];
 
@@ -41,6 +46,16 @@ static rt_uint32_t rd_le32(const rt_uint8_t *p)
                          (p[1] << 8) |
                          (p[2] << 16) |
                          (p[3] << 24));
+}
+
+static rt_bool_t wav_file_exists(const char *path)
+{
+    FILE *fp = fopen(path, "rb");
+    if (fp == RT_NULL) {
+        return RT_FALSE;
+    }
+    fclose(fp);
+    return RT_TRUE;
 }
 
 static int wav_skip(FILE *fp, rt_uint32_t bytes)
@@ -264,22 +279,16 @@ __exit:
     s_wav_thread = RT_NULL;
 }
 
-static int wavplay_cmd(int argc, char **argv)
+static int wavplay_start(const char *path)
 {
-    const char *path = "/test.wav";
-
-    if (argc >= 2) {
-        path = argv[1];
-    }
-
     if (s_wav_thread != RT_NULL) {
         rt_kprintf(WAV_TAG "player busy, use wavstop first\r\n");
-        return 0;
+        return -RT_EBUSY;
     }
 
     if (rt_strlen(path) >= sizeof(s_wav_path)) {
         rt_kprintf(WAV_TAG "path too long\r\n");
-        return 0;
+        return -RT_EFULL;
     }
 
     rt_strncpy(s_wav_path, path, sizeof(s_wav_path) - 1);
@@ -292,10 +301,57 @@ static int wavplay_cmd(int argc, char **argv)
                                     WAV_THREAD_PRIO, 10);
     if (s_wav_thread == RT_NULL) {
         rt_kprintf(WAV_TAG "create player thread failed\r\n");
-        return 0;
+        return -RT_ENOMEM;
     }
 
     rt_thread_startup(s_wav_thread);
+    return RT_EOK;
+}
+
+static void wav_auto_entry(void *parameter)
+{
+    rt_bool_t last_present = RT_FALSE;
+
+    (void)parameter;
+
+    while (1) {
+        rt_bool_t present = wav_file_exists(WAV_AUTO_PATH);
+
+        if (present && !last_present && s_wav_thread == RT_NULL) {
+            rt_kprintf(WAV_TAG "autoplay %s\r\n", WAV_AUTO_PATH);
+            wavplay_start(WAV_AUTO_PATH);
+        } else if (!present && last_present && s_wav_thread != RT_NULL) {
+            s_wav_stop_req = RT_TRUE;
+            rt_kprintf(WAV_TAG "autostop: %s removed\r\n", WAV_AUTO_PATH);
+        }
+
+        last_present = present;
+        rt_thread_mdelay(WAV_AUTO_POLL_MS);
+    }
+}
+
+static int wavplay_autoplay_init(void)
+{
+    s_wav_auto_thread = rt_thread_create("wav_auto",
+                                         wav_auto_entry, RT_NULL,
+                                         WAV_AUTO_THREAD_STACK,
+                                         WAV_AUTO_THREAD_PRIO, 20);
+    if (s_wav_auto_thread != RT_NULL) {
+        rt_thread_startup(s_wav_auto_thread);
+    }
+    return 0;
+}
+INIT_APP_EXPORT(wavplay_autoplay_init);
+
+static int wavplay_cmd(int argc, char **argv)
+{
+    const char *path = WAV_AUTO_PATH;
+
+    if (argc >= 2) {
+        path = argv[1];
+    }
+
+    wavplay_start(path);
     return 0;
 }
 MSH_CMD_EXPORT_ALIAS(wavplay_cmd, wavplay, play wav file from udisk default /test.wav);
