@@ -89,6 +89,7 @@ static struct rt_ringbuffer s_ring;
 static struct usbh_audio *s_audio_class;
 static rt_thread_t s_worker;      /* single thread: USB capture + speaker pump */
 static rt_sem_t    s_pump_sem;    /* IRQ ↔ worker data-ready notify */
+static struct rt_completion s_worker_exit;
 static rt_device_t s_sound_dev;
 static volatile bool s_sound_opened;
 
@@ -103,6 +104,7 @@ static volatile uint32_t s_pump_underruns; /* pump had no full chunk ready */
 static volatile uint32_t s_pump_chunks;    /* chunks written to sound0 */
 static volatile uint32_t s_last_bytes;
 static volatile bool     s_running;
+static volatile bool     s_stop_req;
 
 static uint32_t mix_stereo_to_mono(const int16_t *stereo_in, uint32_t stereo_frames,
                                    int16_t *mono_out, uint32_t mono_cap)
@@ -251,6 +253,7 @@ static void speaker_close_sound(void)
     }
     rt_device_close(s_sound_dev);
     s_sound_opened = false;
+    s_sound_dev = RT_NULL;
 }
 
 /* Drain one playback chunk from the ring buffer into sound0. Returns true
@@ -292,24 +295,50 @@ static bool speaker_drain_one_chunk(void)
     return true;
 }
 
+static bool worker_wait_abortable(uint32_t delay_ms)
+{
+    const uint32_t slice_ms = 10;
+    uint32_t waited = 0;
+
+    while (waited < delay_ms) {
+        if (s_stop_req) {
+            return true;
+        }
+        uint32_t now = delay_ms - waited;
+        if (now > slice_ms) {
+            now = slice_ms;
+        }
+        rt_thread_mdelay(now);
+        waited += now;
+    }
+    return s_stop_req;
+}
+
 /* ---- USB capture + speaker pump worker (single thread per attach) ---- */
 static void mic_worker_entry(void *arg)
 {
     struct usbh_audio *audio_class = (struct usbh_audio *)arg;
+    bool have_sink = false;
     int ret;
 
-    rt_thread_mdelay(100); /* let enumeration settle */
+    if (worker_wait_abortable(100)) { /* let enumeration settle, but detach may arrive first */
+        goto __exit;
+    }
 
     ret = usbh_audio_open(audio_class, "mic", MIC_SAMPLE_RATE, MIC_BIT_RES);
     if (ret < 0) {
         rt_kprintf(MIC_TAG "open(mic, %u, %u) failed: %d\r\n",
                    MIC_SAMPLE_RATE, MIC_BIT_RES, ret);
-        return;
+        goto __exit;
+    }
+
+    if (s_stop_req) {
+        goto __exit;
     }
 
     if (audio_class->isoin == NULL) {
         rt_kprintf(MIC_TAG "no ISO IN endpoint after open\r\n");
-        return;
+        goto __exit;
     }
 
     rt_kprintf(MIC_TAG "stream open: mps=%u, urbs=%u, frames/urb=%u\r\n",
@@ -330,9 +359,13 @@ static void mic_worker_entry(void *arg)
 
     /* Open the speaker first so the I2S/ES8388 path is live before the
      * IRQ starts dropping samples into the ring. */
-    bool have_sink = (speaker_open_sound() == RT_EOK);
+    have_sink = (speaker_open_sound() == RT_EOK);
     if (!have_sink) {
         rt_kprintf(MIC_TAG "sound0 open failed, running in capture-only mode\r\n");
+    }
+
+    if (s_stop_req) {
+        goto __exit;
     }
 
     s_running = true;
@@ -355,15 +388,17 @@ static void mic_worker_entry(void *arg)
     /* Main loop: wake on IRQ-posted sem (one post per URB ≈ every 8 ms)
      * or at worst every 20 ms, then drain as many 1024-frame playback
      * chunks as the ring buffer holds. */
-    while (s_running) {
+    while (s_running && !s_stop_req) {
         rt_sem_take(s_pump_sem, rt_tick_from_millisecond(20));
         if (have_sink) {
-            while (s_running && speaker_drain_one_chunk()) {
+            while (s_running && !s_stop_req && speaker_drain_one_chunk()) {
                 /* keep draining while data is available */
             }
         }
     }
 
+__exit:
+    s_running = false;
     if (have_sink) {
         speaker_close_sound();
     }
@@ -372,6 +407,9 @@ static void mic_worker_entry(void *arg)
                "errors=%u chunks=%u overruns=%u underruns=%u\r\n",
                s_total_frames, s_total_bytes, s_total_errors,
                s_pump_chunks, s_ring_overruns, s_pump_underruns);
+
+    s_worker = RT_NULL;
+    rt_completion_done(&s_worker_exit);
 }
 
 void usbh_audio_run(struct usbh_audio *audio_class)
@@ -391,6 +429,9 @@ void usbh_audio_run(struct usbh_audio *audio_class)
         }
     }
 
+    rt_completion_init(&s_worker_exit);
+    s_stop_req = false;
+    s_running = false;
     s_audio_class = audio_class;
     s_worker = rt_thread_create("mic_uac",
                                 mic_worker_entry, audio_class,
@@ -406,6 +447,7 @@ void usbh_audio_run(struct usbh_audio *audio_class)
 void usbh_audio_stop(struct usbh_audio *audio_class)
 {
     (void)audio_class;
+    s_stop_req = true;
     s_running = false;
     for (uint32_t u = 0; u < MIC_ISO_URB_COUNT; u++) {
         struct usbh_urb *urb = MIC_URB(u);
@@ -417,6 +459,10 @@ void usbh_audio_stop(struct usbh_audio *audio_class)
      * rather than waiting out its 20 ms tick. */
     if (s_pump_sem != RT_NULL) {
         rt_sem_release(s_pump_sem);
+    }
+
+    if (s_worker != RT_NULL) {
+        rt_completion_wait(&s_worker_exit, RT_WAITING_FOREVER);
     }
     s_audio_class = NULL;
 }

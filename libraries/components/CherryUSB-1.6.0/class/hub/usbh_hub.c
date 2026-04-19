@@ -517,7 +517,6 @@ static void usbh_hub_events(struct usbh_hub *hub)
 
         portstatus = port_status.wPortStatus;
         portchange = port_status.wPortChange;
-
         USB_LOG_DBG("port %u, status:0x%03x, change:0x%02x\r\n", port + 1, portstatus, portchange);
 
         /* First, clear all change bits */
@@ -540,6 +539,31 @@ static void usbh_hub_events(struct usbh_hub *hub)
 
         /* Second, if port changes, debounces first */
         if (portchange & HUB_PORT_STATUS_C_CONNECTION) {
+            if (hub->is_roothub) {
+                /* On the PSoC Edge root hub we already observe a stable
+                 * disconnect immediately after clearing C_CONNECTION /
+                 * C_ENABLE: repeated 25 ms debounce sleeps can hang the
+                 * whole system before class disconnect runs, but the port
+                 * status is already "no connection, no further change". In
+                 * that case we can release the child right away and skip the
+                 * debounce loop entirely. */
+                ret = usbh_hub_get_portstatus(hub, port + 1, &port_status);
+                if (ret < 0) {
+                    USB_LOG_ERR("Failed to re-read port %u status after clear, errorcode: %d\r\n", port + 1, ret);
+                    continue;
+                }
+
+                portstatus = port_status.wPortStatus;
+                portchange = port_status.wPortChange;
+
+                if (!(portstatus & HUB_PORT_STATUS_CONNECTION) &&
+                    !(portchange & HUB_PORT_STATUS_C_CONNECTION)) {
+                    child = &hub->child[port];
+                    usbh_hubport_release(child);
+                    continue;
+                }
+            }
+
             uint16_t connection = 0;
             uint16_t debouncestable = 0;
             for (uint32_t debouncetime = 0; debouncetime < HUB_DEBOUNCE_TIMEOUT; debouncetime += HUB_DEBOUNCE_STEP) {
@@ -552,7 +576,6 @@ static void usbh_hub_events(struct usbh_hub *hub)
 
                 portstatus = port_status.wPortStatus;
                 portchange = port_status.wPortChange;
-
                 USB_LOG_DBG("Port %u, status:0x%03x, change:0x%02x\r\n", port + 1, portstatus, portchange);
 
                 if (!(portchange & HUB_PORT_STATUS_C_CONNECTION) &&

@@ -988,7 +988,6 @@ int usbh_roothub_control(struct usbh_bus *bus, struct usb_setup_packet *setup, u
                 if (hprt0 & USB_OTG_HPRT_PPWR) {
                     status |= (1 << HUB_PORT_FEATURE_POWER);
                 }
-
                 memcpy(buf, &status, 4);
                 break;
             default:
@@ -1201,6 +1200,11 @@ static void dwc2_inchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
     urb = chan->urb;
     //printf("s1:%08x\r\n", chan_intstatus);
 
+    if (urb == NULL) {
+        USB_OTG_HC(ch_num)->HCINT = chan_intstatus;
+        return;
+    }
+
     if (chan_intstatus & USB_OTG_HCINT_CHH) {
         USB_OTG_HC(ch_num)->HCINT = chan_intstatus;
         if (chan_intstatus & USB_OTG_HCINT_XFRC) {
@@ -1374,6 +1378,11 @@ static void dwc2_outchan_irq_handler(struct usbh_bus *bus, uint8_t ch_num)
     chan = &g_dwc2_hcd[bus->hcd.hcd_id].chan_pool[ch_num];
     urb = chan->urb;
     //printf("s2:%08x\r\n", chan_intstatus);
+
+    if (urb == NULL) {
+        USB_OTG_HC(ch_num)->HCINT = chan_intstatus;
+        return;
+    }
 
     if (chan_intstatus & USB_OTG_HCINT_CHH) {
         USB_OTG_HC(ch_num)->HCINT = chan_intstatus;
